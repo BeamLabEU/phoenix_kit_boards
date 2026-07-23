@@ -1,0 +1,154 @@
+// Prebuilt LiveView hooks for phoenix_kit_boards. Declared via `js_sources/0`;
+// core's `:phoenix_kit_js_sources` compiler concatenates this (IIFE-wrapped)
+// into the host's `phoenix_kit_modules.js` and folds
+// `window.PhoenixKitBoardsHooks` into `window.PhoenixKitHooks` (spread into the
+// host LiveSocket). The fresco/etcher engines are already loaded by the host.
+window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
+
+(function () {
+  // ── BoardSync — apply remote annotation deltas to the local etcher layer ──
+  //
+  // The server pushes `board:apply` with { created, updated, deleted } when a
+  // peer edits. We drive changes through `window.Etcher.layerFor(id)` so the
+  // canvas never remounts. `addShape` re-emits `annotations-changed`, but the
+  // server treats an unchanged list as a no-op, so applying doesn't echo back.
+  const BoardSync = {
+    mounted() {
+      this.frescoId = this.el.dataset.frescoId;
+      this.handleEvent("board:apply", (delta) => this.apply(delta));
+    },
+
+    layer() {
+      return window.Etcher && typeof window.Etcher.layerFor === "function"
+        ? window.Etcher.layerFor(this.frescoId)
+        : null;
+    },
+
+    apply(delta) {
+      const layer = this.layer();
+      if (!layer) return;
+      (delta.deleted || []).forEach((uuid) => layer.deleteShape(uuid));
+      (delta.updated || []).forEach((shape) => {
+        layer.deleteShape(shape.uuid);
+        layer.addShape(shape);
+      });
+      (delta.created || []).forEach((shape) => layer.addShape(shape));
+    },
+  };
+
+  // ── BoardCursors — live cursors of other viewers ──────────────────────────
+  //
+  // Cursor positions travel in CANVAS coordinates so each viewer maps them
+  // through their own pan/zoom. We read the fresco handle's screen↔image
+  // round-trip: on local pointer move we screenToImage and push; on a peer
+  // update we imageToScreen and place a labeled cursor.
+  const BoardCursors = {
+    mounted() {
+      this.frescoId = this.el.dataset.frescoId;
+      this.cursors = {}; // id -> { el, lastSeen }
+      this.handle = null;
+      this.lastSent = 0;
+
+      if (window.Fresco && typeof window.Fresco.onReady === "function") {
+        window.Fresco.onReady(this.frescoId, (handle) => {
+          this.handle = handle;
+          this.attach();
+        });
+      }
+
+      this.handleEvent("cursor:update", (p) => this.update(p));
+      this.handleEvent("cursor:remove", (p) => this.remove(p.id));
+      this.sweeper = setInterval(() => this.sweep(), 4000);
+    },
+
+    destroyed() {
+      if (this.sweeper) clearInterval(this.sweeper);
+      if (this.onMove) this.root().removeEventListener("pointermove", this.onMove);
+    },
+
+    // The interactive board container (board-cursors is pointer-events:none).
+    root() {
+      return this.el.parentElement || this.el;
+    },
+
+    attach() {
+      this.onMove = (e) => {
+        const now = Date.now();
+        if (now - this.lastSent < 45 || !this.handle) return; // ~22fps throttle
+        this.lastSent = now;
+        try {
+          const pt = this.handle.screenToImage({ x: e.clientX, y: e.clientY });
+          if (pt && typeof pt.x === "number") this.pushEvent("cursor:move", { x: pt.x, y: pt.y });
+        } catch (_) {}
+      };
+      this.root().addEventListener("pointermove", this.onMove);
+    },
+
+    update(p) {
+      if (!this.handle) return;
+      let screen;
+      try {
+        screen = this.handle.imageToScreen({ x: p.x, y: p.y });
+      } catch (_) {
+        return;
+      }
+      const rect = this.el.getBoundingClientRect();
+      const x = screen.x - rect.left;
+      const y = screen.y - rect.top;
+
+      let c = this.cursors[p.id];
+      if (!c) {
+        c = { el: this.buildCursor(p.name, p.color), lastSeen: 0 };
+        this.el.appendChild(c.el);
+        this.cursors[p.id] = c;
+      }
+      c.lastSeen = Date.now();
+      c.el.style.transform = `translate(${x}px, ${y}px)`;
+    },
+
+    buildCursor(name, color) {
+      const wrap = document.createElement("div");
+      wrap.style.cssText =
+        "position:absolute;top:0;left:0;pointer-events:none;will-change:transform;transition:transform 60ms linear;z-index:40;";
+      wrap.innerHTML =
+        `<svg width="18" height="18" viewBox="0 0 24 24" fill="${escapeAttr(color)}" ` +
+        `style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))"><path d="M4 2 L20 12 L13 13 L11 20 Z"/></svg>` +
+        `<span style="position:absolute;left:14px;top:12px;background:${escapeAttr(color)};color:#fff;` +
+        `font:600 11px/1.4 system-ui,sans-serif;padding:1px 6px;border-radius:6px;white-space:nowrap;">` +
+        `${escapeHtml(name)}</span>`;
+      return wrap;
+    },
+
+    remove(id) {
+      const c = this.cursors[id];
+      if (c) {
+        if (c.el.parentNode) c.el.parentNode.removeChild(c.el);
+        delete this.cursors[id];
+      }
+    },
+
+    // Drop cursors that stopped updating (disconnect without a clean leave).
+    sweep() {
+      const now = Date.now();
+      Object.keys(this.cursors).forEach((id) => {
+        if (now - this.cursors[id].lastSeen > 8000) this.remove(id);
+      });
+    },
+  };
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/"/g, "&quot;");
+  }
+
+  window.PhoenixKitBoardsHooks = Object.assign(window.PhoenixKitBoardsHooks, {
+    BoardSync,
+    BoardCursors,
+  });
+})();
