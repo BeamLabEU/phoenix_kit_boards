@@ -23,7 +23,7 @@ defmodule PhoenixKitBoards.Web.IndexLive do
     }
 
     case Boards.create_board(attrs) do
-      {:ok, board} -> {:noreply, push_navigate(socket, to: Paths.board(board.id))}
+      {:ok, board} -> {:noreply, push_navigate(socket, to: Paths.board(board.uuid))}
       {:error, _cs} -> {:noreply, put_flash(socket, :error, "Could not create the board.")}
     end
   end
@@ -82,13 +82,13 @@ defmodule PhoenixKitBoards.Web.IndexLive do
         <li :for={board <- @boards} class="card bg-base-100 border border-base-300 shadow-sm">
           <div class="card-body p-4 gap-3">
             <div class="flex items-start justify-between gap-2">
-              <.link navigate={Paths.board(board.id)} class="font-medium hover:underline truncate">
+              <.link navigate={Paths.board(board.uuid)} class="font-medium hover:underline truncate">
                 {board.name}
               </.link>
               <button
                 type="button"
                 phx-click="delete"
-                phx-value-id={board.id}
+                phx-value-id={board.uuid}
                 data-confirm="Delete this board?"
                 class="btn btn-ghost btn-xs btn-circle text-error"
                 aria-label="Delete board"
@@ -99,7 +99,7 @@ defmodule PhoenixKitBoards.Web.IndexLive do
             <p class="text-xs text-base-content/50">
               Updated {Calendar.strftime(board.updated_at, "%Y-%m-%d %H:%M")}
             </p>
-            <.link navigate={Paths.board(board.id)} class="btn btn-sm btn-outline w-full">
+            <.link navigate={Paths.board(board.uuid)} class="btn btn-sm btn-outline w-full">
               Open
             </.link>
           </div>

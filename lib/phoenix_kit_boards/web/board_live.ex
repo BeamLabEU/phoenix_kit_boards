@@ -50,7 +50,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         {:ok, canvas} = {:ok, Boards.load_canvas(board)}
         annotations = Boards.annotations(canvas)
         me = identity(socket)
-        topic = topic(board.id)
+        topic = topic(board.uuid)
 
         if connected?(socket) do
           PubSubHelper.subscribe(topic)

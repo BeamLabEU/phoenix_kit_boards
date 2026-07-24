@@ -7,9 +7,13 @@ defmodule PhoenixKitBoards.Board do
   `phoenix_kit_boards`.
   """
   use Ecto.Schema
+  use PhoenixKit.SchemaPrefix
   import Ecto.Changeset
 
   @type t :: %__MODULE__{}
+
+  @primary_key {:uuid, UUIDv7, autogenerate: true}
+  @foreign_key_type UUIDv7
 
   schema "phoenix_kit_boards" do
     field(:name, :string)

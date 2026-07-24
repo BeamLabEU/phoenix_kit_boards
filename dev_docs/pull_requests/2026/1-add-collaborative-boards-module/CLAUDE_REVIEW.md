@@ -1,12 +1,14 @@
 # PR #1 Review — Add collaborative boards module (0.1.0)
 
-**Reviewer:** Claude | **Date:** 2026-07-23 | **Verdict:** Approve, with one
-fix applied now (a truthiness bug that silently swallows delete failures) and
-a cluster of schema/migration findings **intentionally deferred** — this is
-the module's first PR, the primary-key convention it deviates from touches
-already-shipped migration DDL, and that deserves its own session rather than
-a same-night patch. No release was cut for this review; see "Deferred to a
-follow-up session" below before publishing to Hex.
+**Reviewer:** Claude | **Date:** 2026-07-23, follow-up 2026-07-24 | **Verdict:**
+Approve. The delete-handler truthiness bug was fixed same-night; the
+schema/migration cluster (missing `use PhoenixKit.SchemaPrefix`, integer `id`
+instead of the umbrella's UUIDv7 primary-key convention, missing conformance
+test) was deferred for a dedicated migrations discussion and has now been
+resolved in the follow-up session below. No release has been cut yet — the
+package is still unpublished (0.1.0 never reached Hex), which is exactly why
+it was safe to rewrite the V1 migration DDL in place rather than shipping a
+V2: there is no installed host to carry forward.
 
 ## Scope of what we reviewed
 
@@ -49,16 +51,32 @@ above it, which already does this correctly.
 
 ---
 
-## Deferred to a follow-up session (migrations — do not act on these without discussing first)
+## Follow-up session (2026-07-24) — migrations cluster resolved
 
-These four are related and all touch the schema/migration layer, which per
-the PR author's note we're revisiting in a dedicated session rather than
-patching tonight. Do not `mix phoenix_kit.update`/publish against a
-production install with the current migration until these are resolved —
-findings #1 and #2 are the ones that actually change behavior; #3 and #4 are
-paperwork that should land in the same pass.
+Before touching anything, we mapped how per-module migrations actually work
+in this umbrella, since the open question was whether decentralizing
+migrations out of `phoenix_kit` core was even a supported path. Short
+version: **it already is** — `migration_module/0` (a `PhoenixKit.Module`
+callback, shipped in core `v1.7.63`) is discovered by `mix phoenix_kit.update`
+(`PhoenixKit.ModuleDiscovery.discover_external_modules/0` →
+`phoenix_kit.update.ex`'s `discover_module_migrations/0` /
+`run_module_migrations/1`), which diffs `migrated_version_runtime/1` against
+`current_version/0` per module and generates+runs a separate host migration
+file per module — completely independent of core's own V01–V157 chain.
+Three modules use it in production today (`phoenix_kit_boards`,
+`phoenix_kit_legal`, `phoenix_kit_stats`); `phoenix_kit_hello_world`'s
+README ("Versioned migrations" section) is the authoritative how-to,
+including a `COMMENT ON TABLE`-based version-tracking scheme that scales
+past V1 (matching how core tracks its own version) and a template for a
+`mix <module>.install` task for first-time setup. None of the three real
+modules fully followed that template — each hand-rolled a boolean
+"does the table exist" check instead of real version tracking, and boards
+additionally skipped the schema-prefix line and the UUIDv7 primary key.
+Per the decision to keep this session scoped to boards, the fixes below
+bring *this module* in line with the documented template; core itself,
+`phoenix_kit_legal`, and `phoenix_kit_stats` were left untouched.
 
-### `BUG - HIGH` — `Board` schema is missing `use PhoenixKit.SchemaPrefix`
+### `BUG - HIGH` — `Board` schema is missing `use PhoenixKit.SchemaPrefix` *(fixed)*
 
 Every table-backed schema in this ecosystem must `use PhoenixKit.SchemaPrefix`
 immediately after `use Ecto.Schema` — it sets `@schema_prefix` from
@@ -82,7 +100,10 @@ the umbrella's own module template
 calls it out explicitly as convention #1, "load-bearing... each one exists
 because a real module got it wrong once."
 
-### `IMPROVEMENT - MEDIUM` — `Board`'s primary key is the Ecto default integer `id`, not the umbrella's UUIDv7 convention
+**Fix:** added `use PhoenixKit.SchemaPrefix` to `board.ex`, right after
+`use Ecto.Schema`.
+
+### `IMPROVEMENT - MEDIUM` — `Board`'s primary key is the Ecto default integer `id`, not the umbrella's UUIDv7 convention *(fixed)*
 
 ```elixir
 schema "phoenix_kit_boards" do
@@ -95,35 +116,36 @@ UUIDv7`, and the migration doesn't declare a `:uuid` primary-key column
 either — so `phoenix_kit_boards` gets Ecto's default auto-increment `id`.
 Every other schema in the umbrella (123 files) uses the UUIDv7 convention;
 the module template calls integer ids "the deprecated legacy convention in
-this ecosystem." Practically: board ids are now small sequential integers
+this ecosystem." Practically: board ids were small sequential integers
 exposed directly in the URL (`/admin/boards/1`, `/admin/boards/2`, …) —
 trivially enumerable. Low severity on its own (the whole `/admin` tree is
 already permission-gated), but it's the kind of inconsistency that bites
 later if boards ever get referenced from another module expecting a UUID.
-`phoenix_kit_sync/lib/phoenix_kit_sync/migration.ex:69-71` is a same-shaped
-standalone (non-core-chain) coordinator that does this correctly and is the
-right template for the fix:
 
-```elixir
-create_if_not_exists table(@connections_table, primary_key: false, prefix: prefix) do
-  add(:uuid, :uuid, primary_key: true, null: false, default: fragment("uuid_generate_v7()"))
-  ...
-```
+**Fix:** `board.ex` now declares `@primary_key {:uuid, UUIDv7, autogenerate:
+true}` / `@foreign_key_type UUIDv7`. `migrations.ex`'s `up_v1` creates the
+table with `primary_key: false` and an explicit
+`add(:uuid, :uuid, primary_key: true, null: false, default: fragment(...))`,
+where the default expression is
+`PhoenixKit.Migrations.Postgres.Helpers.uuid_v7_call(prefix)` — the same
+schema-qualified-`uuid_generate_v7()` helper core's own V-chain uses, reused
+rather than reinvented (the naive `fragment("uuid_generate_v7()")` that
+`phoenix_kit_sync` and `phoenix_kit_boards`'s pre-fix draft both would have
+used resolves via `search_path` and has the exact same `--prefix` blind spot
+as finding #1 above — worth a follow-up note to `phoenix_kit_sync` and any
+future modules copying that snippet). Every `board.id` call site
+(`board_live.ex`'s `topic/1`, `index_live.ex`'s `Paths.board/1` and
+`phx-value-id`) was updated to `board.uuid`. This was safe to do as a V1
+rewrite rather than a new V2 step — the package has never been published to
+Hex, so no host has run this migration against a real database yet.
 
-**Why this is deferred rather than fixed now:** changing the primary-key
-strategy means rewriting `migrations.ex`'s `up_v1`/`down_v1` and bumping the
-coordinator to a v2 (or rewriting v1, if we're confident nobody has run
-`mix phoenix_kit.update` against this table yet — worth confirming before
-touching it). That's exactly the kind of change that deserves the dedicated
-migrations conversation rather than a same-night patch on top of an
-already-merged first PR.
-
-### `NITPICK` — no `test/schema_prefix_conformance_test.exs`
+### `NITPICK` — no `test/schema_prefix_conformance_test.exs` *(fixed)*
 
 Both `phoenix_kit_hello_world` and `phoenix_kit_locations` ship this test —
 it scans `lib/` and fails the build if a table-backed schema is missing
-`use PhoenixKit.SchemaPrefix`. Copy it over alongside the schema-prefix fix;
-it would have caught finding #1 in CI instead of code review.
+`use PhoenixKit.SchemaPrefix`. Copied it over verbatim
+(`test/schema_prefix_conformance_test.exs`) — it now passes because of the
+fix above, and will catch any future schema that forgets the line.
 
 ### `NITPICK` — `timestamps(type: :utc_datetime_usec)` vs. the template's `:utc_datetime`
 
@@ -131,11 +153,24 @@ The module template documents `timestamps(type: :utc_datetime)` as the
 workspace standard (core migration V58 standardized on non-`usec`
 timestamptz columns). In practice every other *standalone* migration
 coordinator that isn't on core's versioned chain (`phoenix_kit_sync`, and
-now this one) also uses `:utc_datetime_usec`, so this may be the template
-doc lagging reality rather than boards being wrong — flagging for the same
-migrations conversation rather than guessing which side to fix.
+this one) also uses `:utc_datetime_usec`. Left as-is — this reads as the
+template doc lagging reality rather than boards being wrong, and it's a
+column-type choice, not a correctness bug; not worth guessing at without
+the module template's maintainer weighing in on which side to update.
 
----
+### `IMPROVEMENT (bonus, beyond the original findings)` — version tracking was a boolean, not a real version *(fixed)*
+
+`migrated_version_runtime/1` used to collapse to `if table_exists?(prefix),
+do: 1, else: 0` — it can tell "not installed" from "installed," but nothing
+else, so a future V2 would have had no way to distinguish "needs the V2
+step" from "already has it." **Fix:** rewrote `migrations.ex` to track the
+version via `COMMENT ON TABLE phoenix_kit_boards IS '<version>'`, mirroring
+core's own `PhoenixKit.Migrations.Postgres` and the scheme documented (but,
+per the research above, not actually used by any of the three real
+production modules) in `phoenix_kit_hello_world`'s README. `up/1`/`down/1`
+now dispatch over a version range via a small `change/3` helper instead of
+a single bare `if`, so adding a V2 later is "add `up_v2`/`down_v2` and a
+`change` clause," not "restructure the whole coordinator."
 
 ## Recommendations we did *not* apply (flagged for follow-up, non-migration)
 
