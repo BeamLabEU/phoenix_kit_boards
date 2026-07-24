@@ -31,8 +31,17 @@ defmodule PhoenixKitBoards.Web.IndexLive do
   @impl true
   def handle_event("delete", %{"id" => id}, socket) do
     case Boards.get_board(id) do
-      nil -> {:noreply, socket}
-      board -> Boards.delete_board(board) && {:noreply, load_boards(socket)}
+      nil ->
+        {:noreply, socket}
+
+      board ->
+        case Boards.delete_board(board) do
+          {:ok, _board} ->
+            {:noreply, load_boards(socket)}
+
+          {:error, _changeset} ->
+            {:noreply, put_flash(socket, :error, "Could not delete the board.")}
+        end
     end
   end
 
