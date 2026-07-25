@@ -39,6 +39,23 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
+    # LiveView mounts twice — once for the HTTP render, once on WebSocket
+    # connect — so anything done unconditionally here runs twice. The
+    # disconnected pass is pure waste on this page: #board-root is
+    # `phx-update="ignore"` and driven entirely by the BoardSync/BoardCursors
+    # hooks, so a server-rendered canvas is discarded the moment JS takes over,
+    # and the board is unusable without a socket regardless. Load nothing and
+    # render a spinner; `render/1` has a matching `board: nil` clause that
+    # deliberately omits #board-root, so the connected render inserts that
+    # subtree fresh rather than having `phx-update="ignore"` pin a skeleton.
+    if connected?(socket) do
+      mount_connected(id, socket)
+    else
+      {:ok, assign(socket, :board, nil)}
+    end
+  end
+
+  defp mount_connected(id, socket) do
     case Boards.get_board(id) do
       nil ->
         {:ok,
@@ -47,22 +64,19 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> push_navigate(to: Paths.boards())}
 
       board ->
-        {:ok, canvas} = {:ok, Boards.load_canvas(board)}
-        annotations = Boards.annotations(canvas)
+        canvas = Boards.load_canvas(board)
         me = identity(socket)
         topic = topic(board.uuid)
 
-        if connected?(socket) do
-          PubSubHelper.subscribe(topic)
-          broadcast(topic, {:board_join, me, self()})
-        end
+        PubSubHelper.subscribe(topic)
+        broadcast(topic, {:board_join, me, self()})
 
         {:ok,
          socket
          |> assign(:page_title, board.name)
          |> assign(:board, board)
          |> assign(:canvas, canvas)
-         |> assign(:annotations, annotations)
+         |> assign(:annotations, Boards.annotations(canvas))
          |> assign(:tools, @tools)
          |> assign(:topic, topic)
          |> assign(:me, me)
@@ -220,7 +234,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # ── Render ───────────────────────────────────────────────────────────────
 
+  # Disconnected render: no board loaded yet, and deliberately no #board-root —
+  # see `mount/3`.
   @impl true
+  def render(%{board: nil} = assigns) do
+    ~H"""
+    <div class="flex items-center justify-center h-[calc(100vh-8rem)] min-h-[520px]">
+      <span class="loading loading-spinner loading-lg text-base-content/40"></span>
+    </div>
+    """
+  end
+
   def render(assigns) do
     ~H"""
     <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3">

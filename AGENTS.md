@@ -174,10 +174,17 @@ and extend the `change/3` dispatch.
   checklist below.
 - **Repo access** is always `PhoenixKit.RepoHelper.repo()`; this module owns no
   repo of its own.
-- `Web.BoardLive.mount/3` fetches the board on *both* the HTTP and the WebSocket
-  mount (LiveView mounts twice); only the PubSub subscribe and join broadcast
-  are guarded by `connected?/1`. Moving the fetch to `handle_params/3` would
-  halve that query count if you are already working in this area.
+- **`Web.BoardLive` loads nothing on the disconnected mount.** LiveView mounts
+  twice (HTTP render, then WebSocket connect), so `mount/3` guards the whole
+  fetch behind `connected?/1` and assigns `board: nil` otherwise; `render/1` has
+  a matching `board: nil` clause showing a spinner. Note that moving work to
+  `handle_params/3` would *not* help — it also runs on both passes. Two reasons
+  this page can skip the disconnected render outright rather than needing
+  `assign_async/3`: it is unusable without a socket (the canvas is hook-driven),
+  and `#board-root` is `phx-update="ignore"`, so anything rendered into that
+  subtree on the HTTP pass would be pinned and never replaced. The `board: nil`
+  clause therefore omits `#board-root` entirely, letting the connected render
+  insert it fresh.
 
 ## Testing
 
