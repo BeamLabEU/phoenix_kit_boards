@@ -38,7 +38,7 @@ defmodule PhoenixKitBoards.Migrations do
   @spec up(keyword()) :: :ok
   def up(opts \\ []) do
     opts = with_defaults(opts, @current_version)
-    initial = migrated_version(opts)
+    initial = read_version(repo(), opts.escaped_prefix)
 
     cond do
       initial == 0 -> change(@initial_version..opts.version, :up, opts)
@@ -53,7 +53,7 @@ defmodule PhoenixKitBoards.Migrations do
   @spec down(keyword()) :: :ok
   def down(opts \\ []) do
     opts = with_defaults(opts, 0)
-    current = migrated_version(opts)
+    current = read_version(repo(), opts.escaped_prefix)
     target = Map.get(opts, :version, 0)
 
     if current > target, do: change(current..(target + 1)//-1, :down, opts)
