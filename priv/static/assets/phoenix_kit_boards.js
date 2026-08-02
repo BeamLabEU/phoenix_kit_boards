@@ -16,6 +16,16 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     mounted() {
       this.frescoId = this.el.dataset.frescoId;
       this.handleEvent("board:apply", (delta) => this.apply(delta));
+
+      // Replies to `this.upload("board_image", …)`. Paired with their request
+      // by arrival order — safe only because `uploadImage` runs one upload at
+      // a time (see there).
+      this.pendingUploads = [];
+      this.handleEvent("board:image-uploaded", ({ url }) => this.settleUpload(null, url));
+      this.handleEvent("board:image-upload-failed", ({ reason }) =>
+        this.settleUpload(reason || "upload failed"),
+      );
+
       this.armEditing();
     },
 
@@ -24,6 +34,46 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         clearTimeout(this._armTimer);
         this._armTimer = null;
       }
+      // Anything still in flight will never be answered now. Reject so Etcher
+      // takes its fallback path instead of leaving the paste in limbo.
+      (this.pendingUploads || []).forEach((p) => {
+        clearTimeout(p.timer);
+        p.reject("board closed before the upload finished");
+      });
+      this.pendingUploads = [];
+    },
+
+    settleUpload(error, url) {
+      const pending = (this.pendingUploads || []).shift();
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      if (error) pending.reject(error);
+      else pending.resolve(url);
+    },
+
+    // Send one image to the server and resolve with its stored URL.
+    //
+    // Serialised: `allow_upload` permits a single entry at a time, and the
+    // request/reply pairing is by order, which only holds while one upload is
+    // in flight. Pasting twice quickly queues rather than races. The timeout
+    // matters because Etcher waits on this promise to decide whether to embed
+    // — a reply that never arrives would otherwise strand the paste.
+    uploadImage(file) {
+      const start = () =>
+        new Promise((resolve, reject) => {
+          const pending = { resolve, reject };
+          pending.timer = setTimeout(() => {
+            const idx = this.pendingUploads.indexOf(pending);
+            if (idx !== -1) this.pendingUploads.splice(idx, 1);
+            reject("timed out waiting for the server");
+          }, 60000);
+          this.pendingUploads.push(pending);
+          this.upload("board_image", [file]);
+        });
+
+      // `start` on both branches so one failure doesn't wedge the queue.
+      this._uploadChain = (this._uploadChain || Promise.resolve()).then(start, start);
+      return this._uploadChain;
     },
 
     layer() {
@@ -62,6 +112,14 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         const tools = typeof layer.tools === "function" ? layer.tools() : null;
         if (!tools || tools.indexOf("grabber") !== -1) {
           layer.selectTool("grabber");
+        }
+
+        // Route pasted / dropped / picked images through storage instead of
+        // letting Etcher embed them as base64. Guarded on the method existing
+        // so an older etcher just keeps embedding rather than breaking the
+        // board. See the LiveView's upload section for why this matters.
+        if (typeof layer.setImageUploader === "function") {
+          layer.setImageUploader((file) => this.uploadImage(file));
         }
         return;
       }

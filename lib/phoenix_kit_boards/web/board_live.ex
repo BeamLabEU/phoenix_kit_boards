@@ -16,9 +16,24 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   """
   use PhoenixKitWeb, :live_view
 
+  require Logger
+
   alias Phoenix.PubSub
+  alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
   alias PhoenixKitBoards.{Boards, Paths}
+
+  # Pasted / dropped images go to storage; the shape keeps a URL.
+  #
+  # Left alone, Etcher embeds an image file in the shape as a base64 data URL.
+  # Since the whole annotation list is re-emitted on every edit, an embedded
+  # screenshot is then re-sent in full every time anything on the board
+  # changes — moving a shape, typing a label. Two or three images is enough to
+  # push an ordinary edit past the socket's frame limit, and past it the socket
+  # closes and the edit is lost with nothing shown to the user. Uploading costs
+  # one request and keeps the list small however many images a board collects.
+  @image_accept ~w(.png .jpg .jpeg .gif .webp)
+  @image_max_bytes 25_000_000
 
   @tools [
     :grabber,
@@ -80,7 +95,101 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> assign(:tools, @tools)
          |> assign(:topic, topic)
          |> assign(:me, me)
-         |> assign(:peers, %{})}
+         |> assign(:peers, %{})
+         |> allow_upload(:board_image,
+           accept: @image_accept,
+           max_entries: 1,
+           max_file_size: @image_max_bytes,
+           auto_upload: true,
+           progress: &handle_image_progress/3
+         )}
+    end
+  end
+
+  # ── Image upload (paste / drop / picker) ──────────────────────────────────
+  #
+  # Driven entirely from JS: `BoardSync` registers an uploader with Etcher and
+  # calls `this.upload/2`, so the `live_file_input` in the template is never
+  # shown or clicked — it exists because that's how LiveView locates an upload
+  # by name. One entry at a time, and the hook serialises pastes to match,
+  # which is what lets the client pair a reply with its request by order.
+  defp handle_image_progress(:board_image, entry, socket) do
+    if entry.done? do
+      result = consume_uploaded_entry(socket, entry, &{:ok, store_image(&1.path, entry, socket)})
+      {:noreply, reply_to_upload(socket, result)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp reply_to_upload(socket, {:ok, url}) do
+    push_event(socket, "board:image-uploaded", %{"url" => url})
+  end
+
+  defp reply_to_upload(socket, {:error, reason}) do
+    # The client falls back to embedding the image, so the paste survives at
+    # the cost of payload size. Say why in the log — a board silently getting
+    # heavier again is exactly the failure this whole path exists to prevent.
+    Logger.warning("[boards] image upload failed (#{inspect(reason)}); client will embed it")
+    push_event(socket, "board:image-upload-failed", %{"reason" => inspect(reason)})
+  end
+
+  defp store_image(path, entry, socket) do
+    user_uuid = uploader_uuid(socket)
+
+    with {:ok, user_uuid} <- require_user(user_uuid),
+         {:ok, checksum} <- file_checksum(path),
+         {:ok, file} <- store_or_reuse(path, user_uuid, checksum, entry),
+         url when is_binary(url) <- Storage.get_public_url(file) do
+      {:ok, url}
+    else
+      nil -> {:error, :no_url_for_stored_file}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Same per-user dedupe the upload controller does, so pasting the same
+  # screenshot onto two boards stores one file.
+  defp store_or_reuse(path, user_uuid, checksum, entry) do
+    case Storage.get_file_by_user_checksum(
+           Storage.calculate_user_file_checksum(user_uuid, checksum)
+         ) do
+      nil ->
+        ext = entry.client_name |> Path.extname() |> String.replace_leading(".", "")
+
+        path
+        |> Storage.store_file_in_buckets("image", user_uuid, checksum, ext, entry.client_name)
+        |> normalize_stored()
+
+      existing ->
+        {:ok, existing}
+    end
+  end
+
+  # `store_file_in_buckets/6` answers `{:ok, file, :duplicate}` when it
+  # recognises the bytes — the per-user check above doesn't catch that, since
+  # it keys on the user. Same file either way, so flatten to `{:ok, file}`
+  # rather than let the 3-tuple fall through as a failure and send the client
+  # back to embedding the image it just uploaded successfully.
+  defp normalize_stored({:ok, file, _dedupe}), do: {:ok, file}
+  defp normalize_stored(other), do: other
+
+  defp file_checksum(path) do
+    case File.read(path) do
+      {:ok, data} -> {:ok, :md5 |> :crypto.hash(data) |> Base.encode16(case: :lower)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Storage files belong to a user. The board pages are behind admin auth so
+  # there always is one; bail rather than invent an owner if that changes.
+  defp require_user(nil), do: {:error, :no_user}
+  defp require_user(uuid), do: {:ok, uuid}
+
+  defp uploader_uuid(socket) do
+    case socket.assigns[:phoenix_kit_current_user] do
+      %{uuid: uuid} when is_binary(uuid) -> uuid
+      _ -> nil
     end
   end
 
@@ -350,6 +459,13 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         >
         </div>
       </div>
+
+      <%!-- The upload target for pasted / dropped images. Never shown and
+            never clicked — `BoardSync` feeds it files through `this.upload/2`
+            — but LiveView finds an upload by locating its input in the DOM,
+            so it has to be here. Outside #board-root, which is
+            phx-update="ignore" and therefore off-limits to LiveView. --%>
+      <.live_file_input upload={@uploads.board_image} class="hidden" tabindex="-1" />
     </div>
     """
   end
