@@ -25,6 +25,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       this.handleEvent("board:image-upload-failed", ({ reason }) =>
         this.settleUpload(reason || "upload failed"),
       );
+      // Drives the bar on Etcher's placeholder. The oldest pending upload is
+      // the one in flight — same ordering the replies rely on.
+      this.handleEvent("board:image-progress", ({ progress }) => {
+        const pending = (this.pendingUploads || [])[0];
+        if (pending && pending.onProgress) pending.onProgress(progress);
+      });
 
       this.armEditing();
     },
@@ -58,10 +64,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // in flight. Pasting twice quickly queues rather than races. The timeout
     // matters because Etcher waits on this promise to decide whether to embed
     // — a reply that never arrives would otherwise strand the paste.
-    uploadImage(file) {
+    uploadImage(file, ctx) {
       const start = () =>
         new Promise((resolve, reject) => {
-          const pending = { resolve, reject };
+          const pending = { resolve, reject, onProgress: ctx && ctx.onProgress };
           pending.timer = setTimeout(() => {
             const idx = this.pendingUploads.indexOf(pending);
             if (idx !== -1) this.pendingUploads.splice(idx, 1);
@@ -119,7 +125,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         // so an older etcher just keeps embedding rather than breaking the
         // board. See the LiveView's upload section for why this matters.
         if (typeof layer.setImageUploader === "function") {
-          layer.setImageUploader((file) => this.uploadImage(file));
+          layer.setImageUploader((file, ctx) => this.uploadImage(file, ctx));
         }
         return;
       }

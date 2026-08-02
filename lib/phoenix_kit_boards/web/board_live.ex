@@ -118,7 +118,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       result = consume_uploaded_entry(socket, entry, &{:ok, store_image(&1.path, entry, socket)})
       {:noreply, reply_to_upload(socket, result)}
     else
-      {:noreply, socket}
+      # Feeds the bar on the half-transparent placeholder Etcher drew as soon
+      # as the paste landed. Without it a large screenshot looks like nothing
+      # is happening for as long as the transfer takes.
+      {:noreply, push_event(socket, "board:image-progress", %{"progress" => entry.progress})}
     end
   end
 
