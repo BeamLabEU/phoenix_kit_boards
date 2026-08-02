@@ -16,12 +16,60 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     mounted() {
       this.frescoId = this.el.dataset.frescoId;
       this.handleEvent("board:apply", (delta) => this.apply(delta));
+      this.armEditing();
+    },
+
+    destroyed() {
+      if (this._armTimer) {
+        clearTimeout(this._armTimer);
+        this._armTimer = null;
+      }
     },
 
     layer() {
       return window.Etcher && typeof window.Etcher.layerFor === "function"
         ? window.Etcher.layerFor(this.frescoId)
         : null;
+    },
+
+    // Open every board ready to edit.
+    //
+    // Etcher boots with annotation mode off, and the bottom toolbar is gated
+    // on that mode (`toolbar.classList.toggle("is-active", on)`), so the
+    // drawing and text tools were hidden until the user found the pencil
+    // button. Someone opening a board almost always intends to work on it, so
+    // the mode goes on for them.
+    //
+    // The tool is then set to the grabber rather than left on the cursor: the
+    // grabber pans and is the only "active" tool etcher deliberately lets
+    // pointer events fall through to Fresco for, so a drag navigates the
+    // canvas instead of drawing or box-selecting. Arriving in a state where
+    // the first drag draws something would be worse than a hidden toolbar.
+    //
+    // Etcher registers the layer handle inside its own hook's `mounted()`,
+    // and hook mount order across sibling elements isn't guaranteed, so poll
+    // briefly rather than assume the handle is there on our first tick.
+    armEditing(attempt) {
+      attempt = attempt || 0;
+      const layer = this.layer();
+
+      if (layer) {
+        if (typeof layer.getMode === "function" && !layer.getMode()) {
+          layer.setMode(true);
+        }
+        // Only if the host actually offers the grabber — `tools` is a
+        // module-level list that a future change could narrow.
+        const tools = typeof layer.tools === "function" ? layer.tools() : null;
+        if (!tools || tools.indexOf("grabber") !== -1) {
+          layer.selectTool("grabber");
+        }
+        return;
+      }
+
+      // ~3s. If etcher never shows up the board is still usable read-only;
+      // retrying forever would just leak a timer.
+      if (attempt >= 60) return;
+      this._armTimer = setTimeout(() => this.armEditing(attempt + 1), 50);
     },
 
     apply(delta) {
