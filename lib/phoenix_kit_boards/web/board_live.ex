@@ -32,7 +32,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # push an ordinary edit past the socket's frame limit, and past it the socket
   # closes and the edit is lost with nothing shown to the user. Uploading costs
   # one request and keeps the list small however many images a board collects.
-  @image_accept ~w(.png .jpg .jpeg .gif .webp)
+  # MIME types as well as extensions: a file off the clipboard is not
+  # guaranteed to arrive with a usable filename, but it always carries a type.
+  @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
   @image_max_bytes 25_000_000
 
   @tools [
@@ -221,6 +223,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   def handle_event("etcher:annotations-changed", _params, socket), do: {:noreply, socket}
+
+  # The upload form's `phx-change`. Nothing to do here — `auto_upload: true`
+  # starts the transfer and `handle_image_progress/3` does the work — but the
+  # event has to be handled: it is the only thing that tells the server an
+  # entry exists at all.
+  def handle_event("board_image_selected", _params, socket), do: {:noreply, socket}
 
   # Other etcher client events we don't persist here (tools, colors, tooltips…).
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
@@ -467,8 +475,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
             never clicked — `BoardSync` feeds it files through `this.upload/2`
             — but LiveView finds an upload by locating its input in the DOM,
             so it has to be here. Outside #board-root, which is
-            phx-update="ignore" and therefore off-limits to LiveView. --%>
-      <.live_file_input upload={@uploads.board_image} class="hidden" tabindex="-1" />
+            phx-update="ignore" and therefore off-limits to LiveView.
+
+            The form is load-bearing, not decoration: `this.upload/2` tracks
+            the files and then dispatches a bubbling `input` event, and a
+            form's `phx-change` is what carries that to the server. Without
+            one the event bubbles into nothing, the server is never told an
+            entry exists, and the upload silently never happens. --%>
+      <form id="board-image-upload-form" phx-change="board_image_selected" class="hidden">
+        <.live_file_input upload={@uploads.board_image} tabindex="-1" />
+      </form>
     </div>
     """
   end

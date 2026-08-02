@@ -29,7 +29,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // the one in flight — same ordering the replies rely on.
       this.handleEvent("board:image-progress", ({ progress }) => {
         const pending = (this.pendingUploads || [])[0];
-        if (pending && pending.onProgress) pending.onProgress(progress);
+        if (!pending) return;
+        // Proof the transfer is alive, so give it another window.
+        this.armUploadWatchdog(pending);
+        if (pending.onProgress) pending.onProgress(progress);
       });
 
       this.armEditing();
@@ -64,15 +67,26 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // in flight. Pasting twice quickly queues rather than races. The timeout
     // matters because Etcher waits on this promise to decide whether to embed
     // — a reply that never arrives would otherwise strand the paste.
+    // Give up on an upload that has gone quiet, so Etcher can fall back to
+    // embedding. Rearmed by every progress report, so this fires on silence
+    // rather than on slowness — a big file mid-transfer keeps resetting it.
+    // Silence means the pipeline is broken (nothing wired up server-side, a
+    // rejected entry, a dropped socket), and the alternative to noticing is
+    // a placeholder that sits on the canvas forever and saves nothing.
+    armUploadWatchdog(pending) {
+      clearTimeout(pending.timer);
+      pending.timer = setTimeout(() => {
+        const idx = this.pendingUploads.indexOf(pending);
+        if (idx !== -1) this.pendingUploads.splice(idx, 1);
+        pending.reject("no word from the server about this upload");
+      }, 15000);
+    },
+
     uploadImage(file, ctx) {
       const start = () =>
         new Promise((resolve, reject) => {
           const pending = { resolve, reject, onProgress: ctx && ctx.onProgress };
-          pending.timer = setTimeout(() => {
-            const idx = this.pendingUploads.indexOf(pending);
-            if (idx !== -1) this.pendingUploads.splice(idx, 1);
-            reject("timed out waiting for the server");
-          }, 60000);
+          this.armUploadWatchdog(pending);
           this.pendingUploads.push(pending);
           this.upload("board_image", [file]);
         });
