@@ -81,6 +81,17 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         layer.addShape(shape);
       });
       (delta.created || []).forEach((shape) => layer.addShape(shape));
+
+      // Re-impose the sender's layering last.
+      //
+      // Position in the list is z-order, and the delete/re-add above appends,
+      // so every applied edit would otherwise shuffle the receiver's stacking
+      // — a peer editing a caption would silently bring it in front of the
+      // image it was behind. `setShapeOrder` deliberately doesn't emit, so
+      // applying a peer's delta can't echo back as a change of our own.
+      if (delta.order && typeof layer.setShapeOrder === "function") {
+        layer.setShapeOrder(delta.order);
+      }
     },
   };
 

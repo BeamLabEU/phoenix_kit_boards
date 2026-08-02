@@ -204,7 +204,20 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # ── Shape-list diff (by uuid) ───────────────────────────────────────────────
 
-  defp diff(old, new) do
+  # Position in the annotation list *is* z-order — etcher paints in array
+  # order — so the diff has to treat a reshuffle as a real change. Keying
+  # purely by uuid made a pure reorder look identical to no edit at all:
+  # `empty_delta?` returned true, so bringing a caption in front of an image
+  # was never saved and never reached the other viewers.
+  #
+  # `order` carries the full uuid list on every delta, not just reorders. The
+  # client applies created/updated/deleted by removing and re-adding shapes,
+  # and re-adding appends — which would scramble layering on any edit at all.
+  # Re-imposing the authoritative order afterwards makes that self-correcting.
+  @doc false
+  # Public only so the delta rules can be tested directly — this is where a
+  # silently-dropped reorder would hide, and the suite runs without a DB.
+  def diff(old, new) do
     old_by = index_by_uuid(old)
     new_by = index_by_uuid(new)
     old_ids = MapSet.new(Map.keys(old_by))
@@ -219,7 +232,29 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       |> Enum.map(&Map.get(new_by, &1))
       |> Enum.filter(fn s -> s != Map.get(old_by, s["uuid"]) end)
 
-    %{"created" => created, "updated" => updated, "deleted" => deleted}
+    %{
+      "created" => created,
+      "updated" => updated,
+      "deleted" => deleted,
+      "order" => uuid_order(new),
+      # Compared over the shapes present in both, so a create or delete
+      # doesn't masquerade as a reorder — those are already reported above.
+      "reordered" => reordered?(old, new)
+    }
+  end
+
+  defp uuid_order(list) do
+    for %{"uuid" => uuid} <- list, is_binary(uuid), do: uuid
+  end
+
+  defp reordered?(old, new) do
+    old_ids = old |> uuid_order() |> MapSet.new()
+    new_ids = new |> uuid_order() |> MapSet.new()
+    survivors = MapSet.intersection(old_ids, new_ids)
+
+    kept = fn list -> list |> uuid_order() |> Enum.filter(&MapSet.member?(survivors, &1)) end
+
+    kept.(old) != kept.(new)
   end
 
   defp index_by_uuid(list) do
@@ -229,8 +264,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end)
   end
 
-  defp empty_delta?(%{"created" => [], "updated" => [], "deleted" => []}), do: true
-  defp empty_delta?(_), do: false
+  @doc false
+  def empty_delta?(%{
+        "created" => [],
+        "updated" => [],
+        "deleted" => [],
+        "reordered" => false
+      }),
+      do: true
+
+  def empty_delta?(_), do: false
 
   # ── Render ───────────────────────────────────────────────────────────────
 
