@@ -145,8 +145,9 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
           layer.setLinkUnfurler(
             (url) =>
               new Promise((resolve, reject) => {
+                // The reply carries the card as SVG — Etcher rasterises it.
                 this.pushEvent("board:unfurl", { url }, (reply) => {
-                  if (reply && reply.href) resolve(reply);
+                  if (reply && reply.svg) resolve(reply);
                   else reject((reply && reply.error) || "unfurl failed");
                 });
               }),
