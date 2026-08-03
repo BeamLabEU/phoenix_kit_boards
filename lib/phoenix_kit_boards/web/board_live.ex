@@ -21,7 +21,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias Phoenix.PubSub
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
-  alias PhoenixKitBoards.{Boards, Paths}
+  alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
 
   # Pasted / dropped images go to storage; the shape keeps a URL.
   #
@@ -230,6 +230,24 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # entry exists at all.
   def handle_event("board_image_selected", _params, socket), do: {:noreply, socket}
 
+  # A pasted URL. Renders a preview card, stores it like any other board
+  # image, and replies with its URL — the client swaps the placeholder text
+  # shape for it. Replying with an error is not a failure path worth
+  # shouting about: the link is already on the canvas as text.
+  def handle_event("board:unfurl", %{"url" => url}, socket) when is_binary(url) do
+    case LinkPreview.unfurl(url) do
+      {:ok, %{svg: svg, width: w, height: h}} ->
+        {:reply, %{"svg" => svg, "width" => w, "height" => h}, socket}
+
+      {:error, reason} ->
+        Logger.info("[boards] link preview declined for #{url}: #{inspect(reason)}")
+        {:reply, %{"error" => to_string(elem_or(reason))}, socket}
+    end
+  end
+
+  def handle_event("board:unfurl", _params, socket),
+    do: {:reply, %{"error" => "bad_request"}, socket}
+
   # Other etcher client events we don't persist here (tools, colors, tooltips…).
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
@@ -240,6 +258,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp elem_or(reason) when is_tuple(reason), do: elem(reason, 0)
+  defp elem_or(reason), do: reason
 
   # ── Remote events (peer → server → client) ────────────────────────────────
 

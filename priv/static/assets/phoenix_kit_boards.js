@@ -137,6 +137,21 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         if (typeof layer.setImageUploader === "function") {
           layer.setImageUploader((file) => this.uploadImage(file));
         }
+
+        // Pasted URLs become preview cards. Unlike uploads this is a plain
+        // request/response, so `pushEvent`'s reply callback carries it — no
+        // queue, no ordering to keep straight.
+        if (typeof layer.setLinkUnfurler === "function") {
+          layer.setLinkUnfurler(
+            (url) =>
+              new Promise((resolve, reject) => {
+                this.pushEvent("board:unfurl", { url }, (reply) => {
+                  if (reply && reply.href) resolve(reply);
+                  else reject((reply && reply.error) || "unfurl failed");
+                });
+              }),
+          );
+        }
         return;
       }
 
