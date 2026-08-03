@@ -68,7 +68,7 @@ defmodule PhoenixKitBoards.MixProject do
       # PhoenixKit core so the host's resolution is never in conflict; the
       # host already loads their JS + hooks (the media annotation feature).
       pk_dep(:fresco, "~> 0.6"),
-      pk_dep(:etcher, "~> 0.7"),
+      pk_dep(:etcher, "~> 0.10"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). open_fresco emits SVG by itself and
