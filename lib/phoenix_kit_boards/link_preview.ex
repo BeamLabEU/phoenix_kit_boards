@@ -50,10 +50,14 @@ defmodule PhoenixKitBoards.LinkPreview do
   @max_bytes 2 * 1024 * 1024
   @max_redirects 3
 
-  # Card proportions, in the same units the Scene is laid out in.
+  # Card proportions, in the same units the Scene is laid out in. The hero
+  # takes about two thirds and the rest is the footer, which is where the
+  # title and site sit — the arrangement every link preview settled on.
   @card_w 640
   @card_h 480
-  @image_h 300
+  @image_h 330
+  @radius 20
+  @footer_bg "#6e6e73"
 
   @doc """
   Unfurl `url` into `{:ok, %{svg: binary, width: integer, height: integer}}`.
@@ -274,35 +278,51 @@ defmodule PhoenixKitBoards.LinkPreview do
 
   @doc false
   def scene(meta) do
-    Scene.new(
-      width: @card_w,
-      height: @card_h,
-      background: Scene.solid("#ffffff")
+    # No canvas background: the card is a rounded rect and the corners outside
+    # it have to be transparent, or it renders as a rounded card pasted onto a
+    # white square.
+    Scene.new(width: @card_w, height: @card_h)
+    |> Scene.add(
+      Scene.shape("card",
+        box: %{x: 0, y: 0, w: @card_w, h: @card_h},
+        radius: @radius,
+        fill: Scene.solid(@footer_bg)
+      )
     )
     |> maybe_hero(meta)
     |> Scene.add(
+      # Squares off the hero's rounded bottom corners and forms the footer in
+      # one go. It stops short of the card's own bottom edge so the rounded
+      # corners down there survive — same colour, so the seam is invisible.
+      Scene.shape("footer",
+        box: %{x: 0, y: @image_h - 20, w: @card_w, h: @card_h - @image_h - 4},
+        radius: 0,
+        fill: Scene.solid(@footer_bg)
+      )
+    )
+    |> Scene.add(
       Scene.text("title",
-        box: %{x: 28, y: @image_h + 26, w: @card_w - 56, h: 110},
+        box: %{x: 32, y: @image_h + 16, w: @card_w - 64, h: 84},
         value: meta.title,
         size: 30,
         weight: 700,
-        fill: Scene.solid("#111827")
+        fill: Scene.solid("#ffffff")
       )
     )
     |> Scene.add(
       Scene.text("site",
-        box: %{x: 28, y: @card_h - 58, w: @card_w - 56, h: 34},
+        box: %{x: 32, y: @card_h - 62, w: @card_w - 64, h: 36},
         value: meta.site,
-        size: 22,
+        size: 24,
         weight: 500,
-        fill: Scene.solid("#6b7280")
+        fill: Scene.solid("#d8d8dd")
       )
     )
   end
 
-  # No `og:image` is the common case on plain pages, so the card drops the
-  # hero band and gives the whole face to the title rather than reserving a
-  # blank rectangle for a picture that doesn't exist.
+  # No `og:image` is the common case on plain pages. The card keeps its shape
+  # — a link preview that changes size depending on whether the site set a
+  # meta tag would be worse than one with a plain coloured head.
   defp maybe_hero(scene, %{image: nil}), do: scene
 
   defp maybe_hero(scene, %{image: src}) do
@@ -311,7 +331,8 @@ defmodule PhoenixKitBoards.LinkPreview do
       Scene.image("hero",
         box: %{x: 0, y: 0, w: @card_w, h: @image_h},
         value: src,
-        fit: :cover
+        fit: :cover,
+        radius: @radius
       )
     )
   end
