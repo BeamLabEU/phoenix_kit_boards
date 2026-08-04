@@ -50,6 +50,25 @@ the module).
 
 - `phoenix_kit ~> 1.7`, `fresco ~> 0.6`, `etcher ~> 0.7` (all resolved by the
   host — this module references their components and reuses their loaded JS).
+- **Raise the LiveView socket's `max_frame_size` in the host endpoint.**
+
+  ```elixir
+  socket "/live", Phoenix.LiveView.Socket,
+    websocket: [connect_info: [session: @session_options], max_frame_size: 64_000_000],
+    longpoll: [connect_info: [session: @session_options]]
+  ```
+
+  Every edit re-emits the *whole* annotation list, and an image pasted onto a
+  board travels inside it as a base64 data URL. One screenshot is easily a few
+  MB, so a board with a couple of images pushes routine edits — moving a shape,
+  typing a label — past the 8 MB default. The socket then closes with 1009
+  (Message Too Big) and reconnects, so the edit never reaches the server and is
+  lost, with nothing to show for it but a flicker of the page's loading bar.
+
+  This raises the ceiling; it does not remove it. A board accumulating pasted
+  images will reach any limit eventually, because the cost is paid again on
+  every single edit. Uploading pasted images to storage and keeping a URL in
+  the shape — rather than the bytes — is the actual fix.
 
 ## License
 

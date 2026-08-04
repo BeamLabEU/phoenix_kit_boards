@@ -64,11 +64,28 @@ defmodule PhoenixKitBoards.MixProject do
       pk_dep(:phoenix_kit, "~> 1.7"),
       {:phoenix_live_view, "~> 1.1"},
 
-      # The infinite-canvas engine + annotation layer. Constraints match
-      # PhoenixKit core so the host's resolution is never in conflict; the
-      # host already loads their JS + hooks (the media annotation feature).
-      pk_dep(:fresco, "~> 0.6"),
-      pk_dep(:etcher, "~> 0.7"),
+      # The infinite-canvas engine + annotation layer. The host already loads
+      # their JS + hooks (the media annotation feature), so these constraints
+      # exist to agree with PhoenixKit core rather than to pull anything new.
+      #
+      # fresco matches core exactly. etcher is deliberately tighter than
+      # core's `~> 0.9`: the collab hook calls `setImageUploader` and
+      # `setLinkUnfurler`, which arrived in 0.10.0, and core's constraint
+      # would resolve to 0.9.0 and leave both features silently degraded.
+      # Narrower is still compatible — a two-part `~>` runs to the next
+      # major, so core admits everything this asks for.
+      pk_dep(:fresco, "~> 0.10"),
+      pk_dep(:etcher, "~> 0.10"),
+
+      # Link previews: fetch the page (req), read its OpenGraph tags (floki),
+      # draw the card (open_fresco). open_fresco emits SVG by itself and
+      # needs a rasterizer for PNG — the HOST supplies that, either the
+      # `{:resvg, "~> 0.5"}` NIF or a resvg / rsvg-convert / magick binary on
+      # PATH. Without one an unfurl fails and a pasted link stays text, so
+      # this is a soft requirement rather than a dependency here.
+      {:req, "~> 0.5"},
+      {:floki, ">= 0.34.0"},
+      pk_dep(:open_fresco, "~> 0.2"),
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

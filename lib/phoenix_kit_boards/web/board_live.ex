@@ -16,9 +16,26 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   """
   use PhoenixKitWeb, :live_view
 
+  require Logger
+
   alias Phoenix.PubSub
+  alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
-  alias PhoenixKitBoards.{Boards, Paths}
+  alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
+
+  # Pasted / dropped images go to storage; the shape keeps a URL.
+  #
+  # Left alone, Etcher embeds an image file in the shape as a base64 data URL.
+  # Since the whole annotation list is re-emitted on every edit, an embedded
+  # screenshot is then re-sent in full every time anything on the board
+  # changes — moving a shape, typing a label. Two or three images is enough to
+  # push an ordinary edit past the socket's frame limit, and past it the socket
+  # closes and the edit is lost with nothing shown to the user. Uploading costs
+  # one request and keeps the list small however many images a board collects.
+  # MIME types as well as extensions: a file off the clipboard is not
+  # guaranteed to arrive with a usable filename, but it always carries a type.
+  @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
+  @image_max_bytes 25_000_000
 
   @tools [
     :grabber,
@@ -80,7 +97,104 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> assign(:tools, @tools)
          |> assign(:topic, topic)
          |> assign(:me, me)
-         |> assign(:peers, %{})}
+         |> assign(:peers, %{})
+         |> allow_upload(:board_image,
+           accept: @image_accept,
+           max_entries: 1,
+           max_file_size: @image_max_bytes,
+           auto_upload: true,
+           progress: &handle_image_progress/3
+         )}
+    end
+  end
+
+  # ── Image upload (paste / drop / picker) ──────────────────────────────────
+  #
+  # Driven entirely from JS: `BoardSync` registers an uploader with Etcher and
+  # calls `this.upload/2`, so the `live_file_input` in the template is never
+  # shown or clicked — it exists because that's how LiveView locates an upload
+  # by name. One entry at a time, and the hook serialises pastes to match,
+  # which is what lets the client pair a reply with its request by order.
+  defp handle_image_progress(:board_image, entry, socket) do
+    if entry.done? do
+      result = consume_uploaded_entry(socket, entry, &{:ok, store_image(&1.path, entry, socket)})
+      {:noreply, reply_to_upload(socket, result)}
+    else
+      # Feeds the bar on the half-transparent placeholder Etcher drew as soon
+      # as the paste landed. Without it a large screenshot looks like nothing
+      # is happening for as long as the transfer takes.
+      {:noreply, push_event(socket, "board:image-progress", %{"progress" => entry.progress})}
+    end
+  end
+
+  defp reply_to_upload(socket, {:ok, url}) do
+    push_event(socket, "board:image-uploaded", %{"url" => url})
+  end
+
+  defp reply_to_upload(socket, {:error, reason}) do
+    # The client falls back to embedding the image, so the paste survives at
+    # the cost of payload size. Say why in the log — a board silently getting
+    # heavier again is exactly the failure this whole path exists to prevent.
+    Logger.warning("[boards] image upload failed (#{inspect(reason)}); client will embed it")
+    push_event(socket, "board:image-upload-failed", %{"reason" => inspect(reason)})
+  end
+
+  defp store_image(path, entry, socket) do
+    user_uuid = uploader_uuid(socket)
+
+    with {:ok, user_uuid} <- require_user(user_uuid),
+         {:ok, checksum} <- file_checksum(path),
+         {:ok, file} <- store_or_reuse(path, user_uuid, checksum, entry),
+         url when is_binary(url) <- Storage.get_public_url(file) do
+      {:ok, url}
+    else
+      nil -> {:error, :no_url_for_stored_file}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Same per-user dedupe the upload controller does, so pasting the same
+  # screenshot onto two boards stores one file.
+  defp store_or_reuse(path, user_uuid, checksum, entry) do
+    case Storage.get_file_by_user_checksum(
+           Storage.calculate_user_file_checksum(user_uuid, checksum)
+         ) do
+      nil ->
+        ext = entry.client_name |> Path.extname() |> String.replace_leading(".", "")
+
+        path
+        |> Storage.store_file_in_buckets("image", user_uuid, checksum, ext, entry.client_name)
+        |> normalize_stored()
+
+      existing ->
+        {:ok, existing}
+    end
+  end
+
+  # `store_file_in_buckets/6` answers `{:ok, file, :duplicate}` when it
+  # recognises the bytes — the per-user check above doesn't catch that, since
+  # it keys on the user. Same file either way, so flatten to `{:ok, file}`
+  # rather than let the 3-tuple fall through as a failure and send the client
+  # back to embedding the image it just uploaded successfully.
+  defp normalize_stored({:ok, file, _dedupe}), do: {:ok, file}
+  defp normalize_stored(other), do: other
+
+  defp file_checksum(path) do
+    case File.read(path) do
+      {:ok, data} -> {:ok, :md5 |> :crypto.hash(data) |> Base.encode16(case: :lower)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Storage files belong to a user. The board pages are behind admin auth so
+  # there always is one; bail rather than invent an owner if that changes.
+  defp require_user(nil), do: {:error, :no_user}
+  defp require_user(uuid), do: {:ok, uuid}
+
+  defp uploader_uuid(socket) do
+    case socket.assigns[:phoenix_kit_current_user] do
+      %{uuid: uuid} when is_binary(uuid) -> uuid
+      _ -> nil
     end
   end
 
@@ -110,6 +224,30 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   def handle_event("etcher:annotations-changed", _params, socket), do: {:noreply, socket}
 
+  # The upload form's `phx-change`. Nothing to do here — `auto_upload: true`
+  # starts the transfer and `handle_image_progress/3` does the work — but the
+  # event has to be handled: it is the only thing that tells the server an
+  # entry exists at all.
+  def handle_event("board_image_selected", _params, socket), do: {:noreply, socket}
+
+  # A pasted URL. Renders a preview card, stores it like any other board
+  # image, and replies with its URL — the client swaps the placeholder text
+  # shape for it. Replying with an error is not a failure path worth
+  # shouting about: the link is already on the canvas as text.
+  def handle_event("board:unfurl", %{"url" => url}, socket) when is_binary(url) do
+    case LinkPreview.unfurl(url) do
+      {:ok, %{svg: svg, width: w, height: h}} ->
+        {:reply, %{"svg" => svg, "width" => w, "height" => h}, socket}
+
+      {:error, reason} ->
+        Logger.info("[boards] link preview declined for #{url}: #{inspect(reason)}")
+        {:reply, %{"error" => to_string(elem_or(reason))}, socket}
+    end
+  end
+
+  def handle_event("board:unfurl", _params, socket),
+    do: {:reply, %{"error" => "bad_request"}, socket}
+
   # Other etcher client events we don't persist here (tools, colors, tooltips…).
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
@@ -120,6 +258,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp elem_or(reason) when is_tuple(reason), do: elem(reason, 0)
+  defp elem_or(reason), do: reason
 
   # ── Remote events (peer → server → client) ────────────────────────────────
 
@@ -204,7 +345,20 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # ── Shape-list diff (by uuid) ───────────────────────────────────────────────
 
-  defp diff(old, new) do
+  # Position in the annotation list *is* z-order — etcher paints in array
+  # order — so the diff has to treat a reshuffle as a real change. Keying
+  # purely by uuid made a pure reorder look identical to no edit at all:
+  # `empty_delta?` returned true, so bringing a caption in front of an image
+  # was never saved and never reached the other viewers.
+  #
+  # `order` carries the full uuid list on every delta, not just reorders. The
+  # client applies created/updated/deleted by removing and re-adding shapes,
+  # and re-adding appends — which would scramble layering on any edit at all.
+  # Re-imposing the authoritative order afterwards makes that self-correcting.
+  @doc false
+  # Public only so the delta rules can be tested directly — this is where a
+  # silently-dropped reorder would hide, and the suite runs without a DB.
+  def diff(old, new) do
     old_by = index_by_uuid(old)
     new_by = index_by_uuid(new)
     old_ids = MapSet.new(Map.keys(old_by))
@@ -219,7 +373,29 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       |> Enum.map(&Map.get(new_by, &1))
       |> Enum.filter(fn s -> s != Map.get(old_by, s["uuid"]) end)
 
-    %{"created" => created, "updated" => updated, "deleted" => deleted}
+    %{
+      "created" => created,
+      "updated" => updated,
+      "deleted" => deleted,
+      "order" => uuid_order(new),
+      # Compared over the shapes present in both, so a create or delete
+      # doesn't masquerade as a reorder — those are already reported above.
+      "reordered" => reordered?(old, new)
+    }
+  end
+
+  defp uuid_order(list) do
+    for %{"uuid" => uuid} <- list, is_binary(uuid), do: uuid
+  end
+
+  defp reordered?(old, new) do
+    old_ids = old |> uuid_order() |> MapSet.new()
+    new_ids = new |> uuid_order() |> MapSet.new()
+    survivors = MapSet.intersection(old_ids, new_ids)
+
+    kept = fn list -> list |> uuid_order() |> Enum.filter(&MapSet.member?(survivors, &1)) end
+
+    kept.(old) != kept.(new)
   end
 
   defp index_by_uuid(list) do
@@ -229,8 +405,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end)
   end
 
-  defp empty_delta?(%{"created" => [], "updated" => [], "deleted" => []}), do: true
-  defp empty_delta?(_), do: false
+  @doc false
+  def empty_delta?(%{
+        "created" => [],
+        "updated" => [],
+        "deleted" => [],
+        "reordered" => false
+      }),
+      do: true
+
+  def empty_delta?(_), do: false
 
   # ── Render ───────────────────────────────────────────────────────────────
 
@@ -307,6 +491,21 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         >
         </div>
       </div>
+
+      <%!-- The upload target for pasted / dropped images. Never shown and
+            never clicked — `BoardSync` feeds it files through `this.upload/2`
+            — but LiveView finds an upload by locating its input in the DOM,
+            so it has to be here. Outside #board-root, which is
+            phx-update="ignore" and therefore off-limits to LiveView.
+
+            The form is load-bearing, not decoration: `this.upload/2` tracks
+            the files and then dispatches a bubbling `input` event, and a
+            form's `phx-change` is what carries that to the server. Without
+            one the event bubbles into nothing, the server is never told an
+            entry exists, and the upload silently never happens. --%>
+      <form id="board-image-upload-form" phx-change="board_image_selected" class="hidden">
+        <.live_file_input upload={@uploads.board_image} tabindex="-1" />
+      </form>
     </div>
     """
   end

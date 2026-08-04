@@ -16,12 +16,150 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     mounted() {
       this.frescoId = this.el.dataset.frescoId;
       this.handleEvent("board:apply", (delta) => this.apply(delta));
+
+      // Replies to `this.upload("board_image", …)`. Paired with their request
+      // by arrival order — safe only because `uploadImage` runs one upload at
+      // a time (see there).
+      this.pendingUploads = [];
+      this.handleEvent("board:image-uploaded", ({ url }) => this.settleUpload(null, url));
+      this.handleEvent("board:image-upload-failed", ({ reason }) =>
+        this.settleUpload(reason || "upload failed"),
+      );
+      // Nothing is drawn from this — the image looks finished the moment it
+      // is pasted — but it is proof the transfer is alive, which is what
+      // keeps the watchdog from giving up on a big slow upload.
+      this.handleEvent("board:image-progress", () => {
+        const pending = (this.pendingUploads || [])[0];
+        if (pending) this.armUploadWatchdog(pending);
+      });
+
+      this.armEditing();
+    },
+
+    destroyed() {
+      if (this._armTimer) {
+        clearTimeout(this._armTimer);
+        this._armTimer = null;
+      }
+      // Anything still in flight will never be answered now. Reject so Etcher
+      // takes its fallback path instead of leaving the paste in limbo.
+      (this.pendingUploads || []).forEach((p) => {
+        clearTimeout(p.timer);
+        p.reject("board closed before the upload finished");
+      });
+      this.pendingUploads = [];
+    },
+
+    settleUpload(error, url) {
+      const pending = (this.pendingUploads || []).shift();
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      if (error) pending.reject(error);
+      else pending.resolve(url);
+    },
+
+    // Give up on an upload that has gone quiet, so Etcher can fall back to
+    // embedding. Rearmed by every progress report, so this fires on silence
+    // rather than on slowness — a big file mid-transfer keeps resetting it.
+    // Silence means the pipeline is broken (nothing wired up server-side, a
+    // rejected entry, a dropped socket), and the alternative to noticing is
+    // an image on the canvas whose bytes are never stored.
+    armUploadWatchdog(pending) {
+      clearTimeout(pending.timer);
+      pending.timer = setTimeout(() => {
+        const idx = this.pendingUploads.indexOf(pending);
+        if (idx !== -1) this.pendingUploads.splice(idx, 1);
+        pending.reject("no word from the server about this upload");
+      }, 15000);
+    },
+
+    // Send one image to the server and resolve with its stored URL.
+    //
+    // Serialised: `allow_upload` permits a single entry at a time, and the
+    // request/reply pairing is by order, which only holds while one upload is
+    // in flight. Pasting twice quickly queues rather than races.
+    uploadImage(file) {
+      const start = () =>
+        new Promise((resolve, reject) => {
+          const pending = { resolve, reject };
+          this.armUploadWatchdog(pending);
+          this.pendingUploads.push(pending);
+          this.upload("board_image", [file]);
+        });
+
+      // `start` on both branches so one failure doesn't wedge the queue.
+      this._uploadChain = (this._uploadChain || Promise.resolve()).then(start, start);
+      return this._uploadChain;
     },
 
     layer() {
       return window.Etcher && typeof window.Etcher.layerFor === "function"
         ? window.Etcher.layerFor(this.frescoId)
         : null;
+    },
+
+    // Open every board ready to edit.
+    //
+    // Etcher boots with annotation mode off, and the bottom toolbar is gated
+    // on that mode (`toolbar.classList.toggle("is-active", on)`), so the
+    // drawing and text tools were hidden until the user found the pencil
+    // button. Someone opening a board almost always intends to work on it, so
+    // the mode goes on for them.
+    //
+    // The tool is then set to the grabber rather than left on the cursor: the
+    // grabber pans and is the only "active" tool etcher deliberately lets
+    // pointer events fall through to Fresco for, so a drag navigates the
+    // canvas instead of drawing or box-selecting. Arriving in a state where
+    // the first drag draws something would be worse than a hidden toolbar.
+    //
+    // Etcher registers the layer handle inside its own hook's `mounted()`,
+    // and hook mount order across sibling elements isn't guaranteed, so poll
+    // briefly rather than assume the handle is there on our first tick.
+    armEditing(attempt) {
+      attempt = attempt || 0;
+      const layer = this.layer();
+
+      if (layer) {
+        if (typeof layer.getMode === "function" && !layer.getMode()) {
+          layer.setMode(true);
+        }
+        // Only if the host actually offers the grabber — `tools` is a
+        // module-level list that a future change could narrow.
+        const tools = typeof layer.tools === "function" ? layer.tools() : null;
+        if (!tools || tools.indexOf("grabber") !== -1) {
+          layer.selectTool("grabber");
+        }
+
+        // Route pasted / dropped / picked images through storage instead of
+        // letting Etcher embed them as base64. Guarded on the method existing
+        // so an older etcher just keeps embedding rather than breaking the
+        // board. See the LiveView's upload section for why this matters.
+        if (typeof layer.setImageUploader === "function") {
+          layer.setImageUploader((file) => this.uploadImage(file));
+        }
+
+        // Pasted URLs become preview cards. Unlike uploads this is a plain
+        // request/response, so `pushEvent`'s reply callback carries it — no
+        // queue, no ordering to keep straight.
+        if (typeof layer.setLinkUnfurler === "function") {
+          layer.setLinkUnfurler(
+            (url) =>
+              new Promise((resolve, reject) => {
+                // The reply carries the card as SVG — Etcher rasterises it.
+                this.pushEvent("board:unfurl", { url }, (reply) => {
+                  if (reply && reply.svg) resolve(reply);
+                  else reject((reply && reply.error) || "unfurl failed");
+                });
+              }),
+          );
+        }
+        return;
+      }
+
+      // ~3s. If etcher never shows up the board is still usable read-only;
+      // retrying forever would just leak a timer.
+      if (attempt >= 60) return;
+      this._armTimer = setTimeout(() => this.armEditing(attempt + 1), 50);
     },
 
     apply(delta) {
@@ -33,6 +171,17 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         layer.addShape(shape);
       });
       (delta.created || []).forEach((shape) => layer.addShape(shape));
+
+      // Re-impose the sender's layering last.
+      //
+      // Position in the list is z-order, and the delete/re-add above appends,
+      // so every applied edit would otherwise shuffle the receiver's stacking
+      // — a peer editing a caption would silently bring it in front of the
+      // image it was behind. `setShapeOrder` deliberately doesn't emit, so
+      // applying a peer's delta can't echo back as a change of our own.
+      if (delta.order && typeof layer.setShapeOrder === "function") {
+        layer.setShapeOrder(delta.order);
+      }
     },
   };
 
