@@ -37,12 +37,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   @image_accept ~w(
     .png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp
     .mp3 .m4a .wav .ogg .opus audio/mpeg audio/mp4 audio/wav audio/ogg audio/opus
+    .mp4 .m4v .webm .mov video/mp4 video/webm video/quicktime
   )
-  # One cap for both kinds, sized for audio: a lesson recording is routinely
-  # tens of MB where a pasted screenshot is under one. The ceiling is the
+  # One cap for all three kinds, sized for video: a screen recording runs to
+  # hundreds of MB where a pasted screenshot is under one. The ceiling is the
   # upload channel's, not the socket's 8MB frame limit — LiveView uploads
   # chunk over their own channel.
-  @image_max_bytes 64_000_000
+  #
+  # Past this, the answer isn't a bigger number: it's an external uploader
+  # (`allow_upload(..., external: ...)`) so bytes go straight to storage
+  # instead of through the server. Worth doing when someone actually hits it.
+  @image_max_bytes 256_000_000
 
   @tools [
     :grabber,
@@ -266,6 +271,25 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     {:noreply, socket}
   end
 
+  # A client answering the announce request above. Relayed to the room rather
+  # than to the newcomer alone: this process has no idea which peer asked,
+  # and everyone else is already at these positions.
+  def handle_event("etcher:media-announce", %{"states" => states}, socket) when is_list(states) do
+    Enum.each(states, fn
+      %{"uuid" => uuid, "playing" => playing} = st when is_binary(uuid) and is_boolean(playing) ->
+        broadcast(
+          socket.assigns.topic,
+          {:board_media, uuid, if(playing, do: "play", else: "pause"),
+           normalize_position(st["position"]), self()}
+        )
+
+      _ ->
+        :ok
+    end)
+
+    {:noreply, socket}
+  end
+
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
   # A local pointer move → broadcast our cursor (canvas coords) to peers.
@@ -316,7 +340,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   def handle_info({:board_join, peer, _from}, socket) do
     broadcast(socket.assigns.topic, {:board_hello, socket.assigns.me, self()})
-    {:noreply, add_peer(socket, peer)}
+
+    {:noreply,
+     socket
+     |> add_peer(peer)
+     # Playback travels as commands, so a newcomer arriving between two of
+     # them would sit silent with no idea what is playing. Say where we are.
+     # Peers already in sync ignore the answer — it lands inside etcher's
+     # drift tolerance — so this costs one round trip per join and nothing
+     # else.
+     |> push_event("board:media-announce", %{})}
   end
 
   def handle_info({:board_hello, _peer, from}, socket) when from == self(), do: {:noreply, socket}

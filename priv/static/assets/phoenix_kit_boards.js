@@ -34,6 +34,14 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         });
       });
 
+      // A peer joined and needs to know what is already playing.
+      this.handleEvent("board:media-announce", () => {
+        const layer = this.layer();
+        if (!layer || typeof layer.mediaStates !== "function") return;
+        const states = layer.mediaStates();
+        if (states && states.length) this.pushEvent("etcher:media-announce", { states });
+      });
+
       this.handleEvent("board:image-uploaded", ({ url }) => this.settleUpload(null, url));
       this.handleEvent("board:image-upload-failed", ({ reason }) =>
         this.settleUpload(reason || "upload failed"),

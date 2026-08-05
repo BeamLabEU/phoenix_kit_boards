@@ -8,8 +8,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Audio on a board, played together.** Drop or paste an audio file and it
-  becomes a player card (etcher 0.11). Whoever presses play, pauses, or
+- **Audio and video on a board, played together.** Drop or paste an audio or
+  video file and it becomes a player (etcher 0.11). Whoever presses play, pauses, or
   scrubs drives it for everyone in the room — a teacher and their students
   hear the same moment of a recording.
 
@@ -19,17 +19,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   session there is nothing to resolve — the useful behaviour is that the
   transport does what the last person to touch it said.
 
-  Uploads now accept audio alongside images, with the size cap raised to 64MB
-  (a lesson recording is routinely tens of MB where a pasted screenshot is
-  under one). This is the LiveView upload channel, which chunks — not the
-  socket's frame limit.
+  Uploads accept audio and video alongside images, with the size cap raised to
+  256MB (a screen recording runs to hundreds of MB where a pasted screenshot
+  is under one). This is the LiveView upload channel, which chunks — not the
+  socket's frame limit. Past this the answer isn't a bigger number but an
+  external uploader, so bytes go straight to storage instead of through the
+  server; worth doing when someone actually hits it.
 
-### Known limitation
-
-- A peer who joins **while audio is already playing** stays silent until the
-  next play/pause/seek, because state is relayed as commands rather than
-  broadcast periodically. Joining before playback starts, which is the usual
-  case for a lesson, works.
+  A peer joining **while something is already playing** is caught up: on join
+  the room is asked to announce where it is, and the answer is relayed.
+  Clients already in step ignore it, since it lands inside etcher's drift
+  tolerance, so this costs one round trip per join.
 
 ## [0.1.0] — 2026-07-22
 
