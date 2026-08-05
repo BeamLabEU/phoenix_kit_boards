@@ -34,8 +34,15 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # one request and keeps the list small however many images a board collects.
   # MIME types as well as extensions: a file off the clipboard is not
   # guaranteed to arrive with a usable filename, but it always carries a type.
-  @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
-  @image_max_bytes 25_000_000
+  @image_accept ~w(
+    .png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp
+    .mp3 .m4a .wav .ogg .opus audio/mpeg audio/mp4 audio/wav audio/ogg audio/opus
+  )
+  # One cap for both kinds, sized for audio: a lesson recording is routinely
+  # tens of MB where a pasted screenshot is under one. The ceiling is the
+  # upload channel's, not the socket's 8MB frame limit — LiveView uploads
+  # chunk over their own channel.
+  @image_max_bytes 64_000_000
 
   @tools [
     :grabber,
@@ -249,6 +256,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     do: {:reply, %{"error" => "bad_request"}, socket}
 
   # Other etcher client events we don't persist here (tools, colors, tooltips…).
+  # Shared playback. Anyone may drive it, so there is no ownership check and
+  # no conflict resolution: the command is relayed verbatim and the last one
+  # to arrive wins. The sender has already applied it locally — this only
+  # carries it to everyone else.
+  def handle_event("etcher:media-command", %{"uuid" => uuid, "action" => action} = params, socket) do
+    position = normalize_position(params["position"])
+    broadcast(socket.assigns.topic, {:board_media, uuid, action, position, self()})
+    {:noreply, socket}
+  end
+
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
   # A local pointer move → broadcast our cursor (canvas coords) to peers.
@@ -283,6 +300,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   # Presence: a newcomer joined → record them and reply so they learn about us.
+  def handle_info({:board_media, _uuid, _action, _position, from}, socket) when from == self(),
+    do: {:noreply, socket}
+
+  def handle_info({:board_media, uuid, action, position, _from}, socket) do
+    {:noreply,
+     push_event(socket, "board:media", %{
+       "uuid" => uuid,
+       "action" => action,
+       "position" => position
+     })}
+  end
+
   def handle_info({:board_join, _peer, from}, socket) when from == self(), do: {:noreply, socket}
 
   def handle_info({:board_join, peer, _from}, socket) do
@@ -340,6 +369,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   defp topic(board_id), do: "phoenix_kit_boards:#{board_id}"
+
+  # A position arrives from the browser, so it can be anything. Anything that
+  # isn't a usable number becomes 0 rather than being relayed onward to make
+  # every peer seek somewhere undefined.
+  defp normalize_position(pos) when is_number(pos) and pos >= 0, do: pos * 1.0
+  defp normalize_position(_), do: 0.0
 
   defp broadcast(topic, msg), do: PubSub.broadcast(PubSubHelper.pubsub(), topic, msg)
 

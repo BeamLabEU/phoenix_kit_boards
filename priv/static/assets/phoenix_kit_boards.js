@@ -21,6 +21,19 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // by arrival order — safe only because `uploadImage` runs one upload at
       // a time (see there).
       this.pendingUploads = [];
+      // Shared playback: a peer drove the transport, so match them. Anyone
+      // may control it, so this is applied unconditionally — etcher decides
+      // whether it's far enough out to be worth a correction, and never
+      // echoes one back.
+      this.handleEvent("board:media", ({ uuid, action, position }) => {
+        const layer = this.layer();
+        if (!layer || typeof layer.applyMediaState !== "function") return;
+        layer.applyMediaState(uuid, {
+          playing: action === "play",
+          position: typeof position === "number" ? position : 0
+        });
+      });
+
       this.handleEvent("board:image-uploaded", ({ url }) => this.settleUpload(null, url));
       this.handleEvent("board:image-upload-failed", ({ reason }) =>
         this.settleUpload(reason || "upload failed"),
