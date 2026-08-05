@@ -39,6 +39,26 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     .mp3 .m4a .wav .ogg .opus audio/mpeg audio/mp4 audio/wav audio/ogg audio/opus
     .mp4 .m4v .webm .mov video/mp4 video/webm video/quicktime
   )
+
+  # `allow_upload` RAISES on any filter the `mime` library can't resolve, and
+  # what it can resolve depends on the HOST's `config :mime` — not on anything
+  # this module can see. On a default install `.m4a`, `.ogg`, `.m4v` and the
+  # `audio/mp4` type are all unresolvable, and each one took the whole board
+  # page down with an ArgumentError at mount rather than degrading.
+  #
+  # So the list is filtered rather than trusted, applying LiveView's own two
+  # rules (`Phoenix.LiveView.UploadConfig`): an extension needs a known type,
+  # and a type needs at least one known extension. Every format is named both
+  # ways here, so dropping one form still leaves the other — a narrower file
+  # picker, not a rejected format. Adding the mapping to the host's
+  # `config :mime` restores it.
+  defp upload_accept do
+    Enum.filter(@image_accept, fn
+      "." <> ext -> MIME.has_type?(ext)
+      type -> MIME.extensions(type) != []
+    end)
+  end
+
   # One cap for all three kinds, sized for video: a screen recording runs to
   # hundreds of MB where a pasted screenshot is under one. The ceiling is the
   # upload channel's, not the socket's 8MB frame limit — LiveView uploads
@@ -111,7 +131,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> assign(:me, me)
          |> assign(:peers, %{})
          |> allow_upload(:board_image,
-           accept: @image_accept,
+           accept: upload_accept(),
            max_entries: 1,
            max_file_size: @image_max_bytes,
            auto_upload: true,

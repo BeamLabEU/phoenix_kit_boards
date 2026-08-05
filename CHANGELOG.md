@@ -26,6 +26,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   external uploader, so bytes go straight to storage instead of through the
   server; worth doing when someone actually hits it.
 
+  The accept list is filtered at runtime against what the host's `mime`
+  config can actually resolve. `allow_upload` raises on a filter it can't
+  map — and on a default install `.m4a`, `.ogg`, `.m4v` and `audio/mp4` are
+  all unmappable — which took the whole board page down at mount instead of
+  degrading. Every format is named both by extension and by MIME type, so
+  dropping one form leaves the other.
+
   A peer joining **while something is already playing** is caught up: on join
   the room is asked to announce where it is, and the answer is relayed.
   Clients already in step ignore it, since it lands inside etcher's drift
