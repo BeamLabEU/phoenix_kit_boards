@@ -237,7 +237,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       }
 
       this.handleEvent("cursor:update", (p) => this.update(p));
-      this.handleEvent("cursor:remove", (p) => this.remove(p.id));
+      this.handleEvent("cursor:remove", (p) => {
+        this.remove(p.id);
+        this.dropPointer(p.id);
+      });
       this.sweeper = setInterval(() => this.sweep(), 4000);
     },
 
@@ -258,14 +261,54 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         this.lastSent = now;
         try {
           const pt = this.handle.screenToImage({ x: e.clientX, y: e.clientY });
-          if (pt && typeof pt.x === "number") this.pushEvent("cursor:move", { x: pt.x, y: pt.y });
+          if (pt && typeof pt.x === "number") {
+            // The red pointer rides the cursor channel rather than a channel
+            // of its own: it IS this person's cursor, just drawn differently.
+            // Sending it separately would mean two streams racing to say
+            // where the same person is, and a moment showing both.
+            this.pushEvent("cursor:move", { x: pt.x, y: pt.y, pointer: this.pointing() });
+          }
         } catch (_) {}
       };
       this.root().addEventListener("pointermove", this.onMove);
     },
 
+    // Is the local user presenting with the red pointer right now?
+    pointing() {
+      const layer = this.layer();
+      return !!(layer && typeof layer.isPointerMode === "function" && layer.isPointerMode());
+    },
+
+    layer() {
+      if (!window.Etcher || typeof window.Etcher.layerFor !== "function") return null;
+      try { return window.Etcher.layerFor(this.frescoId); } catch (_) { return null; }
+    },
+
     update(p) {
       if (!this.handle) return;
+
+      // Someone presenting is drawn by etcher, not here: it owns what a
+      // pointer looks like, it already draws in canvas coordinates so the dot
+      // lands on the same spot for everyone, and it keeps the trail. This
+      // hook's job is only to say who is pointing and where.
+      //
+      // Their arrow goes away while they do — one person is one cursor, and
+      // showing both would read as two people in the same place.
+      if (p.pointer) {
+        const layer = this.layer();
+        if (layer && typeof layer.applyRemotePointer === "function") {
+          this.remove(p.id);
+          this.pointers = this.pointers || {};
+          this.pointers[p.id] = true;
+          layer.applyRemotePointer(p.id, { x: p.x, y: p.y, name: p.name });
+          return;
+        }
+        // No etcher on this page: fall through and draw them as an ordinary
+        // cursor rather than losing them entirely.
+      } else if (this.pointers && this.pointers[p.id]) {
+        this.dropPointer(p.id);
+      }
+
       let screen;
       try {
         screen = this.handle.imageToScreen({ x: p.x, y: p.y });
@@ -307,12 +350,30 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       }
     },
 
+    dropPointer(id) {
+      if (!this.pointers || !this.pointers[id]) return;
+      delete this.pointers[id];
+      const layer = this.layer();
+      if (layer && typeof layer.removeRemotePointer === "function") {
+        layer.removeRemotePointer(id);
+      }
+    },
+
     // Drop cursors that stopped updating (disconnect without a clean leave).
     sweep() {
       const now = Date.now();
       Object.keys(this.cursors).forEach((id) => {
         if (now - this.cursors[id].lastSeen > 8000) this.remove(id);
       });
+      // Pointers time themselves out inside etcher, so a peer that vanishes
+      // mid-present cleans up there. This only drops our record of who was
+      // pointing, so their arrow comes back if they return.
+      if (this.pointers) {
+        Object.keys(this.pointers).forEach((id) => {
+          if (!this.cursors[id]) return;
+          if (now - this.cursors[id].lastSeen > 8000) this.dropPointer(id);
+        });
+      }
     },
   };
 

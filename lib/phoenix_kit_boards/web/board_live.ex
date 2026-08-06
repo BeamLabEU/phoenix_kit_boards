@@ -81,7 +81,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     :text,
     :callout,
     :dimension,
-    :eraser
+    :eraser,
+    :pointer
   ]
 
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
@@ -313,8 +314,20 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
   # A local pointer move → broadcast our cursor (canvas coords) to peers.
-  def handle_event("cursor:move", %{"x" => x, "y" => y}, socket) do
-    broadcast(socket.assigns.topic, {:board_cursor, socket.assigns.me.id, x, y, self()})
+  #
+  # `pointer` says this person has the red pointer armed, so peers should draw
+  # them as a laser dot rather than as an arrow with their name on it. It
+  # rides the cursor message instead of having one of its own because it IS
+  # their cursor — a separate stream would mean two messages racing to say
+  # where the same person is.
+  def handle_event("cursor:move", %{"x" => x, "y" => y} = params, socket) do
+    pointer = params["pointer"] == true
+
+    broadcast(
+      socket.assigns.topic,
+      {:board_cursor, socket.assigns.me.id, x, y, pointer, self()}
+    )
+
     {:noreply, socket}
   end
 
@@ -382,14 +395,31 @@ defmodule PhoenixKitBoards.Web.BoardLive do
      |> push_event("cursor:remove", %{id: peer_id})}
   end
 
-  def handle_info({:board_cursor, _id, _x, _y, from}, socket) when from == self(),
+  def handle_info({:board_cursor, _id, _x, _y, _pointer, from}, socket) when from == self(),
     do: {:noreply, socket}
 
-  def handle_info({:board_cursor, id, x, y, _from}, socket) do
+  def handle_info({:board_cursor, id, x, y, pointer, _from}, socket) do
     peer = Map.get(socket.assigns.peers, id, %{name: "Guest", color: "#64748b"})
 
     {:noreply,
-     push_event(socket, "cursor:update", %{id: id, x: x, y: y, name: peer.name, color: peer.color})}
+     push_event(socket, "cursor:update", %{
+       id: id,
+       x: x,
+       y: y,
+       name: peer.name,
+       color: peer.color,
+       pointer: pointer
+     })}
+  end
+
+  # A peer still running the previous release sends the shorter message. Read
+  # it as "not pointing" rather than crashing the board for everyone on it —
+  # during a rolling deploy both shapes are on the topic at once.
+  def handle_info({:board_cursor, _id, _x, _y, from}, socket) when from == self(),
+    do: {:noreply, socket}
+
+  def handle_info({:board_cursor, id, x, y, from}, socket) do
+    handle_info({:board_cursor, id, x, y, false, from}, socket)
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
