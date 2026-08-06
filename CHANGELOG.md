@@ -26,6 +26,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   external uploader, so bytes go straight to storage instead of through the
   server; worth doing when someone actually hits it.
 
+  Upload progress reaches the placeholder Etcher draws on drop. The LiveView
+  has pushed `board:image-progress` all along and the hook only used it to
+  keep a watchdog alive; it now also feeds Etcher's bar, so a large file
+  shows how far along it is rather than only that it started.
+
   The accept list is filtered at runtime against what the host's `mime`
   config can actually resolve. `allow_upload` raises on a filter it can't
   map — and on a default install `.m4a`, `.ogg`, `.m4v` and `audio/mp4` are

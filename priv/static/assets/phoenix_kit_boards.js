@@ -49,9 +49,16 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // Nothing is drawn from this — the image looks finished the moment it
       // is pasted — but it is proof the transfer is alive, which is what
       // keeps the watchdog from giving up on a big slow upload.
-      this.handleEvent("board:image-progress", () => {
+      this.handleEvent("board:image-progress", ({ progress }) => {
         const pending = (this.pendingUploads || [])[0];
-        if (pending) this.armUploadWatchdog(pending);
+        if (!pending) return;
+        this.armUploadWatchdog(pending);
+        // Feed Etcher's placeholder bar. The server reports 0-100; Etcher
+        // works in fractions. Paired with the head of the queue for the same
+        // reason the reply is — one upload runs at a time.
+        if (typeof pending.onProgress === "function" && typeof progress === "number") {
+          pending.onProgress(progress / 100);
+        }
       });
 
       this.armEditing();
@@ -99,10 +106,13 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // Serialised: `allow_upload` permits a single entry at a time, and the
     // request/reply pairing is by order, which only holds while one upload is
     // in flight. Pasting twice quickly queues rather than races.
-    uploadImage(file) {
+    uploadImage(file, ctx) {
       const start = () =>
         new Promise((resolve, reject) => {
-          const pending = { resolve, reject };
+          // `ctx.onProgress` rides along on the queue entry so the progress
+          // events, which arrive on their own channel, can find the upload
+          // they belong to.
+          const pending = { resolve, reject, onProgress: ctx && ctx.onProgress };
           this.armUploadWatchdog(pending);
           this.pendingUploads.push(pending);
           this.upload("board_image", [file]);
@@ -156,7 +166,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         // so an older etcher just keeps embedding rather than breaking the
         // board. See the LiveView's upload section for why this matters.
         if (typeof layer.setImageUploader === "function") {
-          layer.setImageUploader((file) => this.uploadImage(file));
+          layer.setImageUploader((file, ctx) => this.uploadImage(file, ctx));
         }
 
         // Pasted URLs become preview cards. Unlike uploads this is a plain
