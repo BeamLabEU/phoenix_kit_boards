@@ -127,6 +127,26 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> assign(:page_title, board.name)
          |> assign(:board, board)
          |> assign(:canvas, canvas)
+         # The canvas the TEMPLATE draws, assigned once and never again.
+         #
+         # `@canvas` carries the annotations, and `Fresco.canvas` writes them
+         # into `data-extensions` as JSON — so re-rendering it costs an encode
+         # and a diff of the whole board, and sends the result down the socket.
+         # On a board of any size that is enormous (5 MB on the demo board),
+         # and it happened on every edit, from either end.
+         #
+         # All of it was waste: `#board-root` is `phx-update="ignore"`, so the
+         # client discards the markup and takes its updates from `board:apply`
+         # instead. What it cost was real, though — the encode blocked the
+         # process while cursor messages queued behind it, which is what made
+         # remote cursors choppy and seconds late, and a frame that size per
+         # edit is enough to drop the socket and remount the peer.
+         #
+         # Separating the two assigns leaves change tracking with nothing to
+         # do: this one never changes, so the canvas subtree is rendered at
+         # mount and skipped forever after, while `@canvas` stays current for
+         # persistence without ever reaching the template.
+         |> assign(:initial_canvas, canvas)
          |> assign(:annotations, Boards.annotations(canvas))
          |> assign(:tools, @tools)
          |> assign(:topic, topic)
@@ -241,10 +261,22 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     if empty_delta?(diff(socket.assigns.annotations, incoming)) do
       {:noreply, socket}
     else
+      # Told to the room before it is written down.
+      #
+      # Saving means encoding the whole board and writing it back, which on a
+      # large one is not quick — and this ran first, so every peer waited out
+      # a database round trip before seeing an edit that was already decided.
+      # Nothing in the message depends on the result, so the wait bought them
+      # nothing.
+      #
+      # A save that then fails leaves peers holding an edit that was not
+      # stored, which the flash below reports and the next successful save
+      # corrects. Being a moment optimistic is a better trade than making
+      # every collaborator wait on the disk.
+      broadcast(socket.assigns.topic, {:board_annotations, incoming, self()})
+
       case Boards.save_annotations(socket.assigns.board, socket.assigns.canvas, incoming) do
         {:ok, canvas, board} ->
-          broadcast(socket.assigns.topic, {:board_annotations, incoming, self()})
-
           {:noreply,
            socket
            |> assign(:board, board)
@@ -646,9 +678,11 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         data-fresco-id="board-canvas"
         class="relative flex-1 min-h-0 rounded-lg border border-base-300 overflow-hidden bg-base-200"
       >
+        <%!-- `@initial_canvas`, not `@canvas`: rendered once at mount and
+              never re-rendered. See `mount_connected/2`. --%>
         <Fresco.canvas
           id="board-canvas"
-          canvas={@canvas}
+          canvas={@initial_canvas}
           infinite_canvas
           theme={:inherit}
           class="w-full h-full"
