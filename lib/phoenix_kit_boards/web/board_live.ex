@@ -20,8 +20,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   alias Phoenix.PubSub
   alias PhoenixKit.Modules.Storage
-  alias PhoenixKit.Users.Auth
   alias PhoenixKit.PubSubHelper
+  alias PhoenixKit.Users.Auth
   alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
 
   # Pasted / dropped images go to storage; the shape keeps a URL.
@@ -199,7 +199,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
     with {:ok, user_uuid} <- require_user(user_uuid),
          {:ok, checksum} <- file_checksum(path),
-         {:ok, file} <- store_or_reuse(path, user_uuid, checksum, entry),
+         {:ok, file} <- store_or_reuse(path, user_uuid, checksum, entry.client_name),
          url when is_binary(url) <- Storage.get_public_url(file) do
       {:ok, url}
     else
@@ -210,15 +210,15 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # Same per-user dedupe the upload controller does, so pasting the same
   # screenshot onto two boards stores one file.
-  defp store_or_reuse(path, user_uuid, checksum, entry) do
+  defp store_or_reuse(path, user_uuid, checksum, client_name) do
     case Storage.get_file_by_user_checksum(
            Storage.calculate_user_file_checksum(user_uuid, checksum)
          ) do
       nil ->
-        ext = entry.client_name |> Path.extname() |> String.replace_leading(".", "")
+        ext = client_name |> Path.extname() |> String.replace_leading(".", "")
 
         path
-        |> Storage.store_file_in_buckets("image", user_uuid, checksum, ext, entry.client_name)
+        |> Storage.store_file_in_buckets("image", user_uuid, checksum, ext, client_name)
         |> normalize_stored()
 
       existing ->
@@ -240,6 +240,131 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # ── Embedded images → storage ─────────────────────────────────────────────
+  #
+  # An image whose upload failed is embedded as a base64 `data:` URL so the
+  # paste survives (see `reply_to_upload/2`). That rescue has a long tail: the
+  # bytes are then part of the shape, and the client re-sends every shape on
+  # every edit — so one 3.7 MB screenshot is 3.7 MB up the socket each time
+  # anyone nudges a marker, forever. The demo board carried four of them,
+  # 5.34 MB of the 5.36 MB it sent per edit; the drawing itself was 23 KB.
+  #
+  # So the bytes are moved into storage the first time they arrive, and the
+  # shape rewritten to point at the stored file — the same place a successful
+  # upload would have put them. One-time per image, and the board is small
+  # from then on. The sender is told about the rewrite too, or it would keep
+  # the data URL and send it again on the next edit.
+  #
+  # Failure here is not fatal: the shape keeps its data URL and the board
+  # stays heavy, which is where it already was.
+  defp hoist_embedded_images(annotations, socket) do
+    if Enum.any?(annotations, &embedded_image?/1) do
+      Enum.map_reduce(annotations, [], &hoist_one(&1, &2, socket))
+    else
+      # The overwhelmingly common case: nothing embedded, so this costs one
+      # pass over the list and no work at all.
+      {annotations, []}
+    end
+  end
+
+  defp hoist_one(shape, done, socket) do
+    case hoist_shape(shape, socket) do
+      {:ok, rewritten} -> {rewritten, [rewritten | done]}
+      :error -> {shape, done}
+    end
+  end
+
+  defp embedded_image?(%{"geometry" => %{"href" => "data:" <> _}}), do: true
+  defp embedded_image?(_), do: false
+
+  # The sender is excluded from its own broadcast, so without this it would
+  # still be holding the data URL and would send the bytes up again on its
+  # next edit — the board would never actually get lighter for the person
+  # doing the work.
+  defp tell_sender_about_hoisted(socket, [], _annotations), do: socket
+
+  defp tell_sender_about_hoisted(socket, hoisted, annotations) do
+    push_event(socket, "board:apply", %{
+      "updated" => hoisted,
+      # Re-adding a shape appends, so the layering has to be re-imposed —
+      # same reason the peer path sends it.
+      "order" => uuid_order(annotations)
+    })
+  end
+
+  defp hoist_shape(%{"geometry" => %{"href" => "data:" <> _ = href} = geom} = shape, socket) do
+    case store_data_url(href, socket) do
+      {:ok, url} ->
+        {:ok, Map.put(shape, "geometry", Map.put(geom, "href", url))}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[boards] could not move an embedded image into storage: #{inspect(reason)}"
+        )
+
+        :error
+    end
+  end
+
+  defp hoist_shape(_shape, _socket), do: :error
+
+  defp store_data_url(href, socket) do
+    with {:ok, bytes, ext} <- decode_data_url(href),
+         {:ok, user_uuid} <- require_user(uploader_uuid(socket)) do
+      # A name only for the extension and for what the file is called in the
+      # library; the bytes are deduped by checksum like any other upload, so
+      # re-hoisting the same image twice does not store it twice.
+      name = "pasted-image-#{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}.#{ext}"
+      path = Path.join(System.tmp_dir!(), name)
+
+      try do
+        with :ok <- File.write(path, bytes),
+             {:ok, checksum} <- file_checksum(path),
+             {:ok, file} <- store_or_reuse(path, user_uuid, checksum, name),
+             url when is_binary(url) <- Storage.get_public_url(file) do
+          {:ok, url}
+        else
+          nil -> {:error, :no_url_for_stored_file}
+          {:error, reason} -> {:error, reason}
+        end
+      after
+        File.rm(path)
+      end
+    end
+  end
+
+  @doc false
+  # Public only so the parsing can be tested directly — it reads bytes off the
+  # wire, and the suite runs without storage or a database.
+  def decode_data_url("data:" <> rest) do
+    with [meta, encoded] <- String.split(rest, ",", parts: 2),
+         true <- String.contains?(meta, ";base64"),
+         {:ok, bytes} <- decode_base64(encoded) do
+      {:ok, bytes, meta |> String.split(";") |> List.first() |> image_ext()}
+    else
+      # A `data:` URL that isn't base64 is percent-encoded text — an inline
+      # SVG, most likely. Left alone rather than guessed at: it is small, so
+      # it is not what makes a board heavy.
+      false -> {:error, :not_base64}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :malformed_data_url}
+    end
+  end
+
+  def decode_data_url(_), do: {:error, :not_a_data_url}
+
+  defp decode_base64(encoded) do
+    case Base.decode64(encoded, ignore: :whitespace) do
+      {:ok, bytes} -> {:ok, bytes}
+      :error -> {:error, :bad_base64}
+    end
+  end
+
+  defp image_ext("image/jpeg"), do: "jpg"
+  defp image_ext("image/svg+xml"), do: "svg"
+  defp image_ext("image/" <> subtype), do: String.replace(subtype, ~r/[^a-z0-9]/, "")
+  defp image_ext(_), do: "png"
 
   # Storage files belong to a user. The board pages are behind admin auth so
   # there always is one; bail rather than invent an owner if that changes.
@@ -273,15 +398,20 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       # stored, which the flash below reports and the next successful save
       # corrects. Being a moment optimistic is a better trade than making
       # every collaborator wait on the disk.
-      broadcast(socket.assigns.topic, {:board_annotations, incoming, self()})
+      # Any image still carrying its bytes goes to storage first, so what is
+      # broadcast, stored and re-sent from here on is a URL.
+      {annotations, hoisted} = hoist_embedded_images(incoming, socket)
 
-      case Boards.save_annotations(socket.assigns.board, socket.assigns.canvas, incoming) do
+      broadcast(socket.assigns.topic, {:board_annotations, annotations, self()})
+
+      case Boards.save_annotations(socket.assigns.board, socket.assigns.canvas, annotations) do
         {:ok, canvas, board} ->
           {:noreply,
            socket
            |> assign(:board, board)
            |> assign(:canvas, canvas)
-           |> assign(:annotations, incoming)}
+           |> assign(:annotations, annotations)
+           |> tell_sender_about_hoisted(hoisted, annotations)}
 
         {:error, _reason} ->
           {:noreply, put_flash(socket, :error, "Could not save the board.")}
