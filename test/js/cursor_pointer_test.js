@@ -33,6 +33,21 @@ for (const fn of ["escapeHtml", "escapeAttr"]) {
   global[fn] = eval("(" + m[0].trim().replace(`function ${fn}`, "function") + ")");
 }
 
+// Same reason: the hook reads the send/glide timings from the enclosing IIFE,
+// so they have to exist here. Read from the source rather than restated, or a
+// change to either would leave the test asserting against stale numbers.
+for (const name of ["CURSOR_SEND_MS", "CURSOR_GLIDE_MS"]) {
+  const m = new RegExp(`const ${name} = (\\d+);`).exec(src);
+  assert.ok(m, `could not find ${name}`);
+  global[name] = Number(m[1]);
+}
+
+// A peer's cursor slides between the positions it is told about, and that
+// glide must not finish before the next one arrives — a cursor that reaches
+// its target and waits is the stutter this pins against.
+assert.ok(global.CURSOR_GLIDE_MS >= global.CURSOR_SEND_MS,
+  `a ${global.CURSOR_GLIDE_MS}ms glide between ${global.CURSOR_SEND_MS}ms updates leaves the cursor sitting still`);
+
 // The hook is a plain object literal inside an IIFE — take it by name and
 // evaluate it on its own, so a rename fails loudly instead of quietly
 // testing nothing.
@@ -203,6 +218,62 @@ const arrows = (hook) => Object.keys(hook.cursors);
   const hook = makeHook({});                       // an older etcher
   assert.strictEqual(hook.pointing(), false,
     "an etcher without the pointer API means not pointing, not a crash");
+}
+
+// ── what we send, and when ──────────────────────────────────────────────────
+
+// Moving is a stream of events and the socket gets one every CURSOR_SEND_MS —
+// but the LAST one always has to arrive. A bare throttle drops whatever falls
+// inside the window, and the final move of a gesture is exactly that, so a
+// peer's cursor stopped short of where the person left it and stayed there.
+{
+  const hook = makeHook(makeLayer());
+  hook.lastSent = 0;
+  hook.pushed = [];
+  hook.pushEvent = (name, payload) => hook.pushed.push({ name, payload });
+  hook.handle = { screenToImage: (p) => ({ x: p.x, y: p.y }) };
+
+  let now = 1000;
+  const realNow = Date.now;
+  Date.now = () => now;
+
+  let timer = null;
+  const realSetTimeout = global.setTimeout;
+  global.setTimeout = (fn, ms) => { timer = { fn, ms }; return 1; };
+  global.clearTimeout = () => { timer = null; };
+
+  const move = (x) => { hook.pending = { x, y: x }; hook.flushMove(); };
+
+  move(1);
+  assert.strictEqual(hook.pushed.length, 1, "the first move goes at once");
+  assert.strictEqual(hook.pushed[0].payload.x, 1);
+
+  // Three more inside the window: throttled, not lost.
+  now += 5; move(2);
+  now += 5; move(3);
+  now += 5; move(4);
+  assert.strictEqual(hook.pushed.length, 1, "still just the one");
+  assert.ok(timer, "the last one is waiting its turn");
+  assert.ok(timer.ms > 0 && timer.ms <= CURSOR_SEND_MS, `waits ${timer.ms}ms`);
+
+  // The window passes and the timer fires. Cleared first, so anything armed
+  // after this is a NEW timer rather than the one we just ran.
+  const armed = timer;
+  timer = null;
+  now += armed.ms;
+  armed.fn();
+  assert.strictEqual(hook.pushed.length, 2, "and then it lands");
+  assert.strictEqual(hook.pushed[1].payload.x, 4,
+    "the position sent is where the pointer ended up, not where it was when the window closed");
+
+  // A resting pointer must not keep sending, or rearm itself forever.
+  assert.strictEqual(timer, null, "nothing rearmed");
+  assert.ok(!hook.moveTimer, "and the hook is not holding one");
+  hook.flushMove();
+  assert.strictEqual(hook.pushed.length, 2, "a still pointer sends nothing");
+
+  Date.now = realNow;
+  global.setTimeout = realSetTimeout;
 }
 
 console.log("cursor pointer: all checks passed");

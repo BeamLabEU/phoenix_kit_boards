@@ -6,6 +6,17 @@
 window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
 (function () {
+  // How often a moving cursor is sent, and how long a peer takes to slide
+  // between the two positions it was told about.
+  //
+  // The glide has to be at least as long as the gap between packets or the
+  // cursor finishes early and waits, which is the stutter: move, stop, move,
+  // stop. Slightly longer bridges ordinary jitter, at the cost of running
+  // that far behind — small next to the trip through the server, and far
+  // less noticeable than the stutter it removes.
+  const CURSOR_SEND_MS = 45;
+  const CURSOR_GLIDE_MS = 90;
+
   // ── BoardSync — apply remote annotation deltas to the local etcher layer ──
   //
   // The server pushes `board:apply` with { created, updated, deleted } when a
@@ -278,6 +289,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
     destroyed() {
       if (this.sweeper) clearInterval(this.sweeper);
+      if (this.moveTimer) clearTimeout(this.moveTimer);
       if (this.onMove) this.root().removeEventListener("pointermove", this.onMove);
     },
 
@@ -288,21 +300,47 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
     attach() {
       this.onMove = (e) => {
-        const now = Date.now();
-        if (now - this.lastSent < 45 || !this.handle) return; // ~22fps throttle
-        this.lastSent = now;
-        try {
-          const pt = this.handle.screenToImage({ x: e.clientX, y: e.clientY });
-          if (pt && typeof pt.x === "number") {
-            // The red pointer rides the cursor channel rather than a channel
-            // of its own: it IS this person's cursor, just drawn differently.
-            // Sending it separately would mean two streams racing to say
-            // where the same person is, and a moment showing both.
-            this.pushEvent("cursor:move", { x: pt.x, y: pt.y, pointer: this.pointing() });
-          }
-        } catch (_) {}
+        this.pending = { x: e.clientX, y: e.clientY };
+        this.flushMove();
       };
       this.root().addEventListener("pointermove", this.onMove);
+    },
+
+    // One position per CURSOR_SEND_MS, and always the last one.
+    //
+    // A bare throttle drops whatever arrives inside the window, including the
+    // final move of a gesture — so a peer's cursor stopped a little short of
+    // where the person actually left it and stayed there until they moved
+    // again. Deferring the dropped move instead of discarding it costs one
+    // timer and makes the resting position right.
+    flushMove() {
+      if (!this.handle || !this.pending) return;
+
+      const wait = CURSOR_SEND_MS - (Date.now() - this.lastSent);
+      if (wait > 0) {
+        if (!this.moveTimer) {
+          this.moveTimer = setTimeout(() => {
+            this.moveTimer = null;
+            this.flushMove();
+          }, wait);
+        }
+        return;
+      }
+
+      const at = this.pending;
+      this.pending = null;
+      this.lastSent = Date.now();
+
+      try {
+        const pt = this.handle.screenToImage(at);
+        if (pt && typeof pt.x === "number") {
+          // The red pointer rides the cursor channel rather than a channel
+          // of its own: it IS this person's cursor, just drawn differently.
+          // Sending it separately would mean two streams racing to say
+          // where the same person is, and a moment showing both.
+          this.pushEvent("cursor:move", { x: pt.x, y: pt.y, pointer: this.pointing() });
+        }
+      } catch (_) {}
     },
 
     // Is the local user presenting with the red pointer right now?
@@ -364,7 +402,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     buildCursor(name, color) {
       const wrap = document.createElement("div");
       wrap.style.cssText =
-        "position:absolute;top:0;left:0;pointer-events:none;will-change:transform;transition:transform 60ms linear;z-index:40;";
+        "position:absolute;top:0;left:0;pointer-events:none;will-change:transform;" +
+        `transition:transform ${CURSOR_GLIDE_MS}ms linear;z-index:40;`;
       wrap.innerHTML =
         `<svg width="18" height="18" viewBox="0 0 24 24" fill="${escapeAttr(color)}" ` +
         `style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))"><path d="M4 2 L20 12 L13 13 L11 20 Z"/></svg>` +
