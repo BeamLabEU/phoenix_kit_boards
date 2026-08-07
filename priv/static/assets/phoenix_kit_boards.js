@@ -17,6 +17,25 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       this.frescoId = this.el.dataset.frescoId;
       this.handleEvent("board:apply", (delta) => this.apply(delta));
 
+      // How this user likes the board set up. Etcher emits a DOM event when
+      // any of it changes and takes the whole set back through `setPrefs`;
+      // everything between those two points is the host's business, which is
+      // why nothing about user records appears on etcher's side of it.
+      //
+      // The event carries every preference rather than a diff, so there is
+      // nothing to reconcile — the last one to arrive is the answer.
+      this.onPrefs = (e) => this.pushEvent("etcher:prefs-changed", e.detail || {});
+      this.el.addEventListener("etcher:prefs-changed", this.onPrefs);
+
+      // What the server had stored, handed over once the layer exists. An
+      // empty map means nothing stored, and etcher keeps its own defaults.
+      this.handleEvent("board:prefs", ({ prefs }) => {
+        if (!prefs || !Object.keys(prefs).length) return;
+        this.whenLayer((layer) => {
+          if (typeof layer.setPrefs === "function") layer.setPrefs(prefs);
+        });
+      });
+
       // Replies to `this.upload("board_image", …)`. Paired with their request
       // by arrival order — safe only because `uploadImage` runs one upload at
       // a time (see there).
@@ -65,6 +84,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     },
 
     destroyed() {
+      if (this.onPrefs) this.el.removeEventListener("etcher:prefs-changed", this.onPrefs);
       if (this._armTimer) {
         clearTimeout(this._armTimer);
         this._armTimer = null;
@@ -127,6 +147,18 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       return window.Etcher && typeof window.Etcher.layerFor === "function"
         ? window.Etcher.layerFor(this.frescoId)
         : null;
+    },
+
+    // Stored preferences arrive with the mount reply, which can beat etcher's
+    // own setup — it lazy-loads its script. Retried briefly rather than
+    // dropped, or a fast server would leave the board on its defaults and the
+    // user would watch their setup not apply.
+    whenLayer(fn, tries) {
+      const layer = this.layer();
+      if (layer) { fn(layer); return; }
+      const left = tries === undefined ? 40 : tries;
+      if (left <= 0) return;
+      setTimeout(() => this.whenLayer(fn, left - 1), 50);
     },
 
     // Open every board ready to edit.

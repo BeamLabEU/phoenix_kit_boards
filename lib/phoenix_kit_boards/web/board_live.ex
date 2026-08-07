@@ -20,6 +20,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   alias Phoenix.PubSub
   alias PhoenixKit.Modules.Storage
+  alias PhoenixKit.Users.Auth
   alias PhoenixKit.PubSubHelper
   alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
 
@@ -137,7 +138,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
            max_file_size: @image_max_bytes,
            auto_upload: true,
            progress: &handle_image_progress/3
-         )}
+         )
+         |> push_event("board:prefs", %{prefs: load_prefs(socket)})}
     end
   end
 
@@ -313,6 +315,21 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
+  # The user changed how they like the board set up — which tools are on the
+  # bar, how much of the style panel is open, whether the dots are shown.
+  #
+  # Kept against the USER rather than the board: these are answers about how
+  # someone works, not facts about a drawing, and a board a person opens for
+  # the first time should already look the way they arranged the last one.
+  # Two people on the same board keep their own answers.
+  #
+  # Etcher does not know or care that this is where they end up. It emits the
+  # change and accepts them back; a host storing them in a cookie, a
+  # per-board row, or nowhere at all satisfies the same contract.
+  def handle_event("etcher:prefs-changed", prefs, socket) when is_map(prefs) do
+    {:noreply, save_prefs(socket, prefs)}
+  end
+
   # A local pointer move → broadcast our cursor (canvas coords) to peers.
   #
   # `pointer` says this person has the red pointer armed, so peers should draw
@@ -437,6 +454,42 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   defp add_peer(socket, %{id: id} = peer),
     do: update(socket, :peers, &Map.put(&1, id, peer))
+
+  # ── Preferences, stored on the user ───────────────────────────────────────
+
+  @prefs_field "etcher_prefs"
+
+  defp load_prefs(socket) do
+    case socket.assigns[:phoenix_kit_current_user] do
+      %{custom_fields: %{@prefs_field => prefs}} when is_map(prefs) -> prefs
+      # A signed-out visitor, or someone who has never changed anything.
+      # Etcher treats an empty map as "nothing stored" and keeps its own
+      # defaults, so there is nothing to special-case here.
+      _ -> %{}
+    end
+  end
+
+  defp save_prefs(socket, prefs) do
+    case socket.assigns[:phoenix_kit_current_user] do
+      %{} = user ->
+        # Merged inside the UPDATE rather than read-modify-written here: a
+        # user with two boards open would otherwise have whichever tab saved
+        # second silently overwrite the other's keys.
+        case Auth.merge_user_custom_fields(user, %{@prefs_field => prefs}) do
+          {:ok, updated} -> assign(socket, :phoenix_kit_current_user, updated)
+          # The row went away underneath us, or the write failed. Preferences
+          # are a convenience — losing one is not worth interrupting whatever
+          # the person is drawing.
+          _ -> socket
+        end
+
+      _ ->
+        # Nobody to store them against. Etcher falls back to localStorage on
+        # its own, so a signed-out user still keeps their setup on this
+        # browser; it just cannot follow them anywhere.
+        socket
+    end
+  end
 
   defp identity(socket) do
     user = socket.assigns[:phoenix_kit_current_user]
