@@ -17,6 +17,15 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
   const CURSOR_SEND_MS = 45;
   const CURSOR_GLIDE_MS = 90;
 
+  // Do two objects carry the same set of keys? Null and an empty object are
+  // the same thing here — a shape with no style and a shape whose style is
+  // empty are not a difference worth rebuilding an element over.
+  function sameKeys(a, b) {
+    const ka = Object.keys(a || {});
+    const kb = Object.keys(b || {});
+    return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b || {}, k));
+  }
+
   // ── BoardSync — apply remote annotation deltas to the local etcher layer ──
   //
   // The server pushes `board:apply` with { created, updated, deleted } when a
@@ -239,23 +248,67 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     apply(delta) {
       const layer = this.layer();
       if (!layer) return;
-      (delta.deleted || []).forEach((uuid) => layer.deleteShape(uuid));
-      (delta.updated || []).forEach((shape) => {
-        layer.deleteShape(shape.uuid);
-        layer.addShape(shape);
-      });
-      (delta.created || []).forEach((shape) => layer.addShape(shape));
 
-      // Re-impose the sender's layering last.
+      const deleted = delta.deleted || [];
+      const updated = delta.updated || [];
+      const created = delta.created || [];
+
+      deleted.forEach((uuid) => layer.deleteShape(uuid));
+
+      // A changed shape is patched where it stands.
       //
-      // Position in the list is z-order, and the delete/re-add above appends,
-      // so every applied edit would otherwise shuffle the receiver's stacking
-      // — a peer editing a caption would silently bring it in front of the
-      // image it was behind. `setShapeOrder` deliberately doesn't emit, so
-      // applying a peer's delta can't echo back as a change of our own.
-      if (delta.order && typeof layer.setShapeOrder === "function") {
+      // Deleting and re-adding it rebuilds the element: media reloads, images
+      // re-decode, and the shape flashes. It also appends, which is why the
+      // layering had to be re-imposed afterwards — and that re-imposition
+      // touched every shape on the board, so watching a peer drag one thing
+      // flashed all of it.
+      updated.forEach((shape) => {
+        if (!this.patchInPlace(layer, shape)) {
+          layer.deleteShape(shape.uuid);
+          layer.addShape(shape);
+        }
+      });
+
+      created.forEach((shape) => layer.addShape(shape));
+
+      // Re-impose the sender's layering, but only when it can have moved.
+      //
+      // Position in the list is z-order. Patching leaves a shape where it
+      // already sits, so an ordinary edit no longer disturbs it — only adding,
+      // removing, or a real reorder can, and the server says which.
+      // `setShapeOrder` deliberately doesn't emit, so applying a peer's delta
+      // can't echo back as a change of our own.
+      const structural = created.length > 0 || deleted.length > 0 || delta.reordered;
+      if (structural && delta.order && typeof layer.setShapeOrder === "function") {
         layer.setShapeOrder(delta.order);
       }
+    },
+
+    // True if the shape was updated in place.
+    //
+    // Declines rather than guesses. `patchShape` MERGES style and metadata, so
+    // a peer that REMOVED one of those keys would leave a stale copy here —
+    // comparing the key sets first catches that and falls back to the honest
+    // rebuild. A move, which is the case that matters, changes only geometry
+    // and so always takes the fast path.
+    patchInPlace(layer, shape) {
+      if (!shape || !shape.uuid) return false;
+      if (typeof layer.patchShape !== "function" || typeof layer.getShape !== "function") {
+        return false;
+      }
+
+      const existing = layer.getShape(shape.uuid);
+      if (!existing) return false;
+      if (existing.kind !== shape.kind) return false;
+      if (!sameKeys(existing.style, shape.style)) return false;
+      if (!sameKeys(existing.metadata, shape.metadata)) return false;
+
+      layer.patchShape(shape.uuid, {
+        geometry: shape.geometry,
+        style: shape.style,
+        metadata: shape.metadata
+      });
+      return true;
     },
   };
 

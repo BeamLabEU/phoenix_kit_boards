@@ -115,7 +115,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> push_navigate(to: Paths.boards())}
 
       board ->
-        canvas = Boards.load_canvas(board)
+        {board, canvas} = migrate_embedded_images(board, socket)
         me = identity(socket)
         topic = topic(board.uuid)
 
@@ -160,6 +160,36 @@ defmodule PhoenixKitBoards.Web.BoardLive do
            progress: &handle_image_progress/3
          )
          |> push_event("board:prefs", %{prefs: load_prefs(socket)})}
+    end
+  end
+
+  # Boards written before images were uploaded — or while an upload was
+  # failing — carry the bytes inline. Doing this at open rather than waiting
+  # for an edit means the first edit is already a fast one, and a board nobody
+  # has touched since still gets lighter.
+  #
+  # Costs nothing on a board with nothing embedded: one pass over the list,
+  # no write.
+  defp migrate_embedded_images(board, socket) do
+    canvas = Boards.load_canvas(board)
+    annotations = Boards.annotations(canvas)
+
+    case hoist_embedded_images(annotations, socket) do
+      {_annotations, []} ->
+        {board, canvas}
+
+      {hoisted, moved} ->
+        Logger.info("[boards] moved #{length(moved)} embedded image(s) into storage")
+
+        case Boards.save_annotations(board, canvas, hoisted) do
+          {:ok, canvas, board} ->
+            {board, canvas}
+
+          {:error, reason} ->
+            # The board still works, it is just still heavy.
+            Logger.warning("[boards] could not save the migrated board: #{inspect(reason)}")
+            {board, canvas}
+        end
     end
   end
 
