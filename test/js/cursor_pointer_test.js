@@ -37,18 +37,22 @@ for (const fn of ["escapeHtml", "escapeAttr"]) {
 // have to exist here. Read from the source rather than restated, or a change
 // to any of them would leave the test asserting against stale numbers.
 for (const name of [
-  "CURSOR_SEND_MS", "CURSOR_GLIDE_MS", "CURSOR_MAX_GLIDE_MS", "CURSOR_STALE_GAP_MS"
+  "CURSOR_SEND_MS", "CURSOR_GLIDE_MS", "CURSOR_MIN_GLIDE_MS",
+  "CURSOR_MAX_GLIDE_MS", "CURSOR_STALE_GAP_MS"
 ]) {
   const m = new RegExp(`const ${name} = (\\d+);`).exec(src);
   assert.ok(m, `could not find ${name}`);
   global[name] = Number(m[1]);
 }
 
-// A cursor glides between the positions it is told about, and that glide must
-// not finish before the next one arrives — a cursor that reaches its target
-// and waits is the stutter all of this exists to remove.
-assert.ok(global.CURSOR_GLIDE_MS >= global.CURSOR_SEND_MS,
-  `a ${global.CURSOR_GLIDE_MS}ms glide between ${global.CURSOR_SEND_MS}ms updates leaves the cursor sitting still`);
+// A cursor glides between the positions it is told about, over the interval
+// they are actually arriving at. The bounds on that measurement are what has
+// to hold: below a frame there is no motion to see, and above the ceiling a
+// peer who stopped would keep drifting.
+assert.ok(global.CURSOR_MIN_GLIDE_MS > 0 && global.CURSOR_MIN_GLIDE_MS <= 20,
+  "the floor should be about one frame");
+assert.ok(global.CURSOR_GLIDE_MS >= global.CURSOR_MIN_GLIDE_MS,
+  "the opening estimate cannot start below the floor");
 assert.ok(global.CURSOR_MAX_GLIDE_MS > global.CURSOR_GLIDE_MS,
   "the ceiling has to leave room above the starting estimate");
 assert.ok(global.CURSOR_STALE_GAP_MS > global.CURSOR_MAX_GLIDE_MS,
@@ -375,6 +379,28 @@ const xOf = (c) => {
   assert.ok(c.span <= CURSOR_MAX_GLIDE_MS, "but never past the ceiling");
 }
 
+// Over the channel, positions arrive about once a frame — far faster than
+// the rationed fallback rate. The glide has to follow them down, or every
+// cursor would sit a fallback-interval behind for no reason: the measurement
+// is what decides, and only a frame is allowed to floor it.
+{
+  const hook = makeHook(makeLayer());
+  clock = 0;
+  frames = [];
+
+  hook.update({ id: "p1", x: 0, y: 0, name: "A", color: "#f00" });
+  const c = hook.cursors["p1"];
+
+  for (let i = 1; i <= 20; i++) {
+    clock += CURSOR_MIN_GLIDE_MS;
+    hook.update({ id: "p1", x: i, y: 0, name: "A", color: "#f00" });
+  }
+
+  assert.ok(c.span < CURSOR_SEND_MS,
+    `frame-rate packets should glide in under ${CURSOR_SEND_MS}ms, got ${c.span}`);
+  assert.ok(c.span >= CURSOR_MIN_GLIDE_MS, "but never below a frame");
+}
+
 // A pause is not a slow connection. Someone who stops for a second and starts
 // again must not leave the estimate believing every packet takes a second.
 {
@@ -466,14 +492,26 @@ const xOf = (c) => {
     channel: { push: (event, payload) => sent.push({ event, payload }) }
   };
 
-  t += CURSOR_SEND_MS;
+  // Paced by the display rather than a timer, so nothing goes until the
+  // frame does — and several moves inside one frame collapse to the last.
+  frames = [];
+  hook.pending = { x: 6, y: 7 };
+  hook.flushMove();
   hook.pending = { x: 7, y: 8 };
   hook.flushMove();
+  assert.strictEqual(sent.length, 0, "waits for the frame");
+  assert.strictEqual(frames.length, 1, "and only asks for one");
 
+  frame();
   assert.strictEqual(sent.length, 1, "went down the channel");
   assert.strictEqual(sent[0].event, "cursor");
-  assert.deepStrictEqual(sent[0].payload, { x: 7, y: 8, pointer: false });
+  assert.deepStrictEqual(sent[0].payload, { x: 7, y: 8, pointer: false },
+    "the position sent is the latest, not the one that opened the frame");
   assert.strictEqual(hook.pushed.length, 1, "and not through the LiveView as well");
+
+  // A still pointer stops asking for frames rather than spinning.
+  hook.flushMove();
+  assert.strictEqual(frames.length, 0, "nothing pending, nothing scheduled");
 
   // A channel that exists but hasn't finished joining is not a channel yet.
   BoardLink.links["board-canvas"].joined = false;
@@ -490,10 +528,12 @@ const xOf = (c) => {
     handlers: {},
     channel: { push: () => { throw new Error("socket died"); } }
   };
-  t += CURSOR_SEND_MS;
+  frames = [];
   hook.pending = { x: 11, y: 12 };
   hook.flushMove();
+  frame();
   assert.strictEqual(hook.pushed.length, 3, "a broken channel falls back too");
+  assert.deepStrictEqual(hook.pushed[2].payload, { x: 11, y: 12, pointer: false });
 
   BoardLink.links = {};
   Date.now = realNow;

@@ -6,18 +6,11 @@
 window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
 (function () {
-  // How often a moving cursor is sent.
+  // How often a moving cursor is sent WHEN THERE IS NO CHANNEL.
   //
-  // Interpolation makes any rate look smooth, but it draws a peer where they
-  // were one interval ago — so the interval is also the lag. At 45ms that was
-  // a visible fraction of a beat behind; 25 puts it under the threshold where
-  // it reads as following the other person rather than trailing them.
-  //
-  // A cursor is two floats and a flag, so the cost is the message rate rather
-  // than the bytes: 40 a second per moving user, each one a LiveView event, a
-  // broadcast, and a push to every peer. Fine for a room; if boards ever hold
-  // large groups this is the number to revisit, or move cursors onto a
-  // channel of their own so they skip the diff cycle.
+  // On the fallback path every position is a LiveView event costing a render
+  // and a diff, so it has to be rationed. Over the channel it isn't rationed
+  // at all — see `scheduleSend`, which paces by the display instead.
   const CURSOR_SEND_MS = 25;
 
   // What a peer's cursor glides over until enough packets have arrived to
@@ -26,11 +19,17 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
   // connection, and drifting slowly across the board for a quarter second
   // after they stopped looks worse than arriving.
   //
-  // The opening guess sits just above the send interval — close enough that
-  // the first moves of a session already look right, with a little room for
-  // the jitter the measurement then settles onto.
-  const CURSOR_GLIDE_MS = 40;
+  // The opening guess sits between a frame and the fallback rate — close
+  // enough that the first moves of a session already look right, whichever
+  // pipe they came down, with room for the jitter the measurement settles
+  // onto.
+  const CURSOR_GLIDE_MS = 24;
   const CURSOR_MAX_GLIDE_MS = 250;
+
+  // The floor. A glide shorter than a frame cannot be seen as motion — it is
+  // a jump — so there is nothing to gain below this, and it stops a burst of
+  // packets collapsing the glide to nothing.
+  const CURSOR_MIN_GLIDE_MS = 16;
 
   // A gap longer than this is a peer who stopped moving and started again,
   // not a slow packet — it says nothing about the connection, so it must not
@@ -527,7 +526,9 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     destroyed() {
       if (this.sweeper) clearInterval(this.sweeper);
       if (this.moveTimer) clearTimeout(this.moveTimer);
+      if (this.sendFrame) cancelAnimationFrame(this.sendFrame);
       if (this.raf) cancelAnimationFrame(this.raf);
+      this.sendFrame = null;
       this.raf = null;
       if (this.onMove) this.root().removeEventListener("pointermove", this.onMove);
     },
@@ -545,15 +546,34 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       this.root().addEventListener("pointermove", this.onMove);
     },
 
-    // One position per CURSOR_SEND_MS, and always the last one.
+    // Decide when the pending position goes out. The rate follows the pipe.
     //
-    // A bare throttle drops whatever arrives inside the window, including the
-    // final move of a gesture — so a peer's cursor stopped a little short of
-    // where the person actually left it and stayed there until they moved
-    // again. Deferring the dropped move instead of discarding it costs one
-    // timer and makes the resting position right.
+    // Over the channel: once per animation frame. A position nobody can see
+    // is a position not worth rationing — the display is the only rate that
+    // means anything, pointer events can outrun it, and a cursor is two
+    // floats and a flag relayed by a process that does nothing else. Pacing
+    // by the display is both the smoothest possible and the cheapest that
+    // still is.
+    //
+    // Without one: a timer, because each position is then a LiveView event
+    // costing a render and a diff, and 60 a second of those is exactly the
+    // load the channel exists to avoid.
+    //
+    // Either way the LAST position always goes. A bare throttle drops
+    // whatever falls inside its window, and the final move of a gesture is
+    // exactly that — so a peer's cursor stopped short of where the person
+    // left it and stayed there until they moved again.
     flushMove() {
       if (!this.handle || !this.pending) return;
+
+      if (BoardLink.get(this.frescoId)) {
+        if (this.sendFrame) return;
+        this.sendFrame = requestAnimationFrame(() => {
+          this.sendFrame = null;
+          this.sendMove();
+        });
+        return;
+      }
 
       const wait = CURSOR_SEND_MS - (Date.now() - this.lastSent);
       if (wait > 0) {
@@ -565,6 +585,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         }
         return;
       }
+
+      this.sendMove();
+    },
+
+    sendMove() {
+      if (!this.handle || !this.pending) return;
 
       const at = this.pending;
       this.pending = null;
@@ -669,7 +695,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       c.from = { x: c.at.x, y: c.at.y };
       c.to = { x: p.x, y: p.y };
       c.startedAt = now;
-      c.span = Math.max(CURSOR_SEND_MS, Math.min(c.interval, CURSOR_MAX_GLIDE_MS));
+      c.span = Math.max(CURSOR_MIN_GLIDE_MS, Math.min(c.interval, CURSOR_MAX_GLIDE_MS));
       c.lastSeen = Date.now();
 
       this.startDrawing();
