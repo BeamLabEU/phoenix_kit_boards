@@ -23,6 +23,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
   alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
+  alias PhoenixKitBoards.Web.BoardSocket
 
   # Pasted / dropped images go to storage; the shape keeps a URL.
   #
@@ -159,7 +160,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
            auto_upload: true,
            progress: &handle_image_progress/3
          )
-         |> push_event("board:prefs", %{prefs: load_prefs(socket)})}
+         |> push_event("board:prefs", %{prefs: load_prefs(socket)})
+         # Lets the client open the ephemeral channel — cursors and in-flight
+         # drags. It falls back to relaying them through here if the host
+         # hasn't mounted the socket, so this is an offer rather than a
+         # requirement.
+         |> push_event("board:channel", %{
+           token: BoardSocket.sign(socket, board.uuid, me),
+           topic: "board:#{board.uuid}",
+           # Where the host mounted the socket. It picks the path, so it has
+           # to be the one to say — the client cannot guess it.
+           path: BoardSocket.mount_path()
+         })}
     end
   end
 

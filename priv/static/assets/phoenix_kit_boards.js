@@ -54,6 +54,112 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b || {}, k));
   }
 
+  // ── BoardLink — the ephemeral channel ─────────────────────────────────────
+  //
+  // Cursors and in-flight drags go over a channel of their own rather than
+  // through the LiveView. Both are high-rate and worthless a moment later,
+  // and through a LiveView every position pays for a render and a diff,
+  // queued behind that process's real work — saving edits, uploads, link
+  // previews.
+  //
+  // Optional by design. The socket is declared on the host's endpoint, so a
+  // host that hasn't added it simply never connects, and everything falls
+  // back to the LiveView relay that was there before. Nothing here may assume
+  // it succeeded.
+  //
+  // One connection per board, shared: both hooks on the page ask for it and
+  // whichever gets there first opens it.
+  const BoardLink = {
+    links: {},
+
+    // The Socket class, without requiring the host to export it. LiveView
+    // already built one, and its constructor is the same class.
+    socketClass() {
+      if (window.Phoenix && window.Phoenix.Socket) return window.Phoenix.Socket;
+      const live = window.liveSocket;
+      if (live && live.socket && live.socket.constructor) return live.socket.constructor;
+      return null;
+    },
+
+    // Idempotent: called by every hook that hears the offer.
+    ensure(id, info) {
+      if (!id || !info || !info.token || !info.topic) return null;
+
+      const existing = this.links[id];
+      if (existing) {
+        // A remount hands out a fresh token for the same board; the live
+        // connection is still good.
+        if (existing.topic === info.topic) return existing;
+        this.close(id);
+      }
+
+      const Socket = this.socketClass();
+      if (!Socket) return null;
+
+      let link;
+      try {
+        const socket = new Socket(info.path || "/phoenix_kit/board", {
+          params: { token: info.token }
+        });
+        socket.connect();
+
+        const channel = socket.channel(info.topic, {});
+        link = { socket, channel, topic: info.topic, joined: false, handlers: {} };
+
+        channel.onMessage = (event, payload, ref) => {
+          const fn = link.handlers[event];
+          if (fn) {
+            try { fn(payload); } catch (_) {}
+          }
+          return payload;
+        };
+
+        channel
+          .join()
+          .receive("ok", () => { link.joined = true; })
+          // A refusal is not worth shouting about — the LiveView path still
+          // works, and the board is fully usable on it.
+          .receive("error", () => { link.joined = false; })
+          .receive("timeout", () => { link.joined = false; });
+
+        this.links[id] = link;
+      } catch (_) {
+        return null;
+      }
+
+      return link;
+    },
+
+    get(id) {
+      const link = this.links[id];
+      return link && link.joined ? link : null;
+    },
+
+    on(id, event, fn) {
+      const link = this.links[id];
+      if (link) link.handlers[event] = fn;
+    },
+
+    push(id, event, payload) {
+      const link = this.get(id);
+      if (!link) return false;
+      try {
+        link.channel.push(event, payload);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    },
+
+    close(id) {
+      const link = this.links[id];
+      if (!link) return;
+      delete this.links[id];
+      try { link.channel.leave(); } catch (_) {}
+      try { link.socket.disconnect(); } catch (_) {}
+    }
+  };
+
   // ── BoardSync — apply remote annotation deltas to the local etcher layer ──
   //
   // The server pushes `board:apply` with { created, updated, deleted } when a
@@ -109,6 +215,9 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         if (states && states.length) this.pushEvent("etcher:media-announce", { states });
       });
 
+      // The ephemeral channel — cursors and in-flight drags.
+      this.handleEvent("board:channel", (info) => this.openLink(info));
+
       this.handleEvent("board:image-uploaded", ({ url }) => this.settleUpload(null, url));
       this.handleEvent("board:image-upload-failed", ({ reason }) =>
         this.settleUpload(reason || "upload failed"),
@@ -144,6 +253,44 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         p.reject("board closed before the upload finished");
       });
       this.pendingUploads = [];
+    },
+
+    // Open the ephemeral channel and start streaming drags over it.
+    //
+    // Everything here is best-effort: no channel means no live drags, and a
+    // board that behaves exactly as it did before — peers see a shape when
+    // the person lets go of it rather than while they move it.
+    openLink(info) {
+      const link = BoardLink.ensure(this.frescoId, info);
+      if (!link) return;
+
+      // A peer's shapes, mid-drag. Nothing is stored — the edit itself
+      // arrives through the LiveView when they release, which is what settles
+      // the position and what a reload would show.
+      BoardLink.on(this.frescoId, "moving", ({ shapes }) => {
+        const layer = this.layer();
+        if (layer && typeof layer.applyShapesMoving === "function") {
+          layer.applyShapesMoving(shapes);
+        }
+      });
+
+      this.whenLayer((layer) => this.streamMoves(layer));
+    },
+
+    // Report our own drags so peers can watch them happen.
+    //
+    // Etcher batches these to one report per frame and only while a pointer
+    // is down, so this is a frame's worth of geometry rather than a flood.
+    // Geometry only: it is all a drag changes and all a peer needs.
+    streamMoves(layer) {
+      if (typeof layer.onShapesMoving !== "function") return;
+      if (this._streaming) return;
+      this._streaming = true;
+
+      layer.onShapesMoving(
+        (shapes) => BoardLink.push(this.frescoId, "moving", { shapes }),
+        () => BoardLink.push(this.frescoId, "moved", {})
+      );
     },
 
     settleUpload(error, url) {
@@ -365,6 +512,15 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         this.remove(p.id);
         this.dropPointer(p.id);
       });
+
+      // Cursors prefer the ephemeral channel; the LiveView handler above
+      // stays wired because it is the fallback when the host hasn't mounted
+      // the socket, and because leaves still arrive that way.
+      this.handleEvent("board:channel", (info) => {
+        if (BoardLink.ensure(this.frescoId, info)) {
+          BoardLink.on(this.frescoId, "cursor", (p) => this.update(p));
+        }
+      });
       this.sweeper = setInterval(() => this.sweep(), 4000);
     },
 
@@ -417,11 +573,18 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       try {
         const pt = this.handle.screenToImage(at);
         if (pt && typeof pt.x === "number") {
-          // The red pointer rides the cursor channel rather than a channel
-          // of its own: it IS this person's cursor, just drawn differently.
-          // Sending it separately would mean two streams racing to say
-          // where the same person is, and a moment showing both.
-          this.pushEvent("cursor:move", { x: pt.x, y: pt.y, pointer: this.pointing() });
+          // The red pointer rides the cursor message rather than one of its
+          // own: it IS this person's cursor, just drawn differently. Sending
+          // it separately would mean two streams racing to say where the same
+          // person is, and a moment showing both.
+          const move = { x: pt.x, y: pt.y, pointer: this.pointing() };
+
+          // Straight down the channel when there is one — that is the whole
+          // point of having it. Otherwise back through the LiveView, which
+          // relays it exactly as it always did.
+          if (!BoardLink.push(this.frescoId, "cursor", move)) {
+            this.pushEvent("cursor:move", move);
+          }
         }
       } catch (_) {}
     },

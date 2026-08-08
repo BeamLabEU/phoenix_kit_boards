@@ -69,6 +69,18 @@ const frame = (ms) => {
   due.forEach((fn) => fn());
 };
 
+// Cursors go over the ephemeral channel when there is one and fall back to
+// the LiveView when there isn't, so the thing that decides has to be here.
+{
+  const at = src.indexOf("  const BoardLink = {");
+  assert.notStrictEqual(at, -1, "could not find BoardLink");
+  const to = src.indexOf("\n  };", at);
+  assert.notStrictEqual(to, -1, "could not find the end of BoardLink");
+  global.BoardLink = eval(
+    "(" + src.slice(at + "  const BoardLink = ".length, to + "\n  }".length) + ")"
+  );
+}
+
 // The hook is a plain object literal inside an IIFE — take it by name and
 // evaluate it on its own, so a rename fails loudly instead of quietly
 // testing nothing.
@@ -416,6 +428,75 @@ const xOf = (c) => {
   hook.remove("p1");
   frame();
   assert.strictEqual(frames.length, 0, "no peers, no loop");
+}
+
+// ── which pipe a cursor goes down ───────────────────────────────────────────
+//
+// The ephemeral channel when there is one — that is the point of having it.
+// The LiveView when there isn't, which is where cursors used to go and what a
+// host that hasn't mounted the socket still gets.
+
+{
+  const hook = makeHook(makeLayer());
+  hook.frescoId = "board-canvas";
+  hook.lastSent = 0;
+  hook.pushed = [];
+  hook.pushEvent = (name, payload) => hook.pushed.push({ name, payload });
+  hook.handle = { screenToImage: (p) => ({ x: p.x, y: p.y }) };
+
+  const realNow = Date.now;
+  let t = 100000;
+  Date.now = () => t;
+
+  // No channel joined: straight to the LiveView.
+  BoardLink.links = {};
+  hook.pending = { x: 5, y: 6 };
+  hook.flushMove();
+  assert.strictEqual(hook.pushed.length, 1, "fell back to the LiveView");
+  assert.strictEqual(hook.pushed[0].name, "cursor:move");
+  assert.deepStrictEqual(hook.pushed[0].payload, { x: 5, y: 6, pointer: false });
+
+  // Joined: down the channel instead, and NOT also through the LiveView —
+  // sending both would have every peer told twice.
+  const sent = [];
+  BoardLink.links["board-canvas"] = {
+    joined: true,
+    topic: "board:x",
+    handlers: {},
+    channel: { push: (event, payload) => sent.push({ event, payload }) }
+  };
+
+  t += CURSOR_SEND_MS;
+  hook.pending = { x: 7, y: 8 };
+  hook.flushMove();
+
+  assert.strictEqual(sent.length, 1, "went down the channel");
+  assert.strictEqual(sent[0].event, "cursor");
+  assert.deepStrictEqual(sent[0].payload, { x: 7, y: 8, pointer: false });
+  assert.strictEqual(hook.pushed.length, 1, "and not through the LiveView as well");
+
+  // A channel that exists but hasn't finished joining is not a channel yet.
+  BoardLink.links["board-canvas"].joined = false;
+  t += CURSOR_SEND_MS;
+  hook.pending = { x: 9, y: 10 };
+  hook.flushMove();
+  assert.strictEqual(sent.length, 1, "nothing sent to an unjoined channel");
+  assert.strictEqual(hook.pushed.length, 2, "fell back while it joins");
+
+  // A channel that throws must not lose the cursor either.
+  BoardLink.links["board-canvas"] = {
+    joined: true,
+    topic: "board:x",
+    handlers: {},
+    channel: { push: () => { throw new Error("socket died"); } }
+  };
+  t += CURSOR_SEND_MS;
+  hook.pending = { x: 11, y: 12 };
+  hook.flushMove();
+  assert.strictEqual(hook.pushed.length, 3, "a broken channel falls back too");
+
+  BoardLink.links = {};
+  Date.now = realNow;
 }
 
 console.log("cursor pointer: all checks passed");
