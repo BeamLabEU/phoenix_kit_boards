@@ -10,7 +10,13 @@ it: an infinite [Fresco](https://hex.pm/packages/fresco) canvas with the
 [Etcher](https://hex.pm/packages/etcher) drawing layer (shapes, text, images).
 Everyone on the same board sees each other's edits, cursors, and presence in
 real time. One board = one row in `phoenix_kit_boards`, its `Fresco.Canvas`
-document serialized into the `data` jsonb column. No files, no external storage.
+document serialized into the `data` jsonb column.
+
+Two things deliberately do *not* live in that column: a pasted image is
+uploaded to PhoenixKit's Storage module and the shape keeps its URL, and a
+pasted URL is unfurled server-side into a preview card that goes through the
+same upload path. Both exist because the whole annotation list is re-emitted
+on every edit — see "Images and links" below.
 
 Implements the `PhoenixKit.Module` behaviour for auto-discovery — the host app
 adds the dep and enables the module; the sidebar tab, routes, permission, CSS,
@@ -35,17 +41,29 @@ mix quality.ci              # format --check-formatted + credo --strict + dialyz
 This is a **library** (not a standalone Phoenix app) — no `config/`, endpoint,
 or router of its own.
 
-- `phoenix_kit` (`~> 1.7`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`
+- `phoenix_kit` (`~> 1.7`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
-- `fresco` (`~> 0.6`) — the infinite-canvas engine and `Fresco.Canvas` document
-- `etcher` (`~> 0.7`) — the annotation/drawing layer over the canvas
+- `fresco` (`~> 0.10`) — the infinite-canvas engine and `Fresco.Canvas` document
+- `etcher` (`~> 0.10`) — the annotation/drawing layer over the canvas
+- `req` (`~> 0.5`) — fetches the page behind a pasted link
+- `floki` (`>= 0.34.0`) — reads its OpenGraph tags
+- `open_fresco` (`~> 0.2`) — lays the preview card out and emits it as SVG
 - `lazy_html` (test only)
 
-Constraints on `fresco`/`etcher` deliberately match PhoenixKit core so the
-host's resolution is never in conflict — core already depends on both for its
-media annotation feature. **That is also why this module needs no host JS
-setup:** core already loads `fresco.js` and `etcher.js`, so `<Fresco.canvas>`
-and `<Etcher.layer>` work here out of the box.
+`fresco` matches PhoenixKit core exactly so the host's resolution is never in
+conflict — core already depends on both for its media annotation feature.
+`etcher` is deliberately tighter than core's `~> 0.9`: `setImageUploader` and
+`setLinkUnfurler` arrived in 0.10.0, and core's constraint would happily
+resolve 0.9.0 and leave both features silently degraded. Narrower is still
+compatible — a two-part `~>` runs to the next major, so core admits everything
+this asks for. **Core loading the JS is also why this module needs no host JS
+setup:** `fresco.js` and `etcher.js` are already there, so `<Fresco.canvas>`
+and `<Etcher.layer>` work out of the box.
+
+`open_fresco` can rasterise to PNG through an optional `:resvg` NIF or a CLI
+on PATH, but this module never asks it to — cards are emitted as SVG and the
+browser rasterises them. **Do not add a rasterizer requirement**; see the
+`PhoenixKitBoards.LinkPreview` moduledoc for why that path was rejected.
 
 ## Local cross-repo development
 
@@ -77,8 +95,12 @@ Implemented via `pk_dep/3` in `mix.exs` — never hand-edit a path dep in.
   `route_module/0`; PhoenixKit injects them inside the admin `live_session`.
 - **`PhoenixKitBoards.Paths`** (`paths.ex`) — every link/redirect, via
   `PhoenixKit.Utils.Routes.path/1`.
+- **`PhoenixKitBoards.LinkPreview`** (`link_preview.ex`) — turns a pasted URL
+  into a preview-card SVG: fetch → OpenGraph → `OpenFresco.Scene` → SVG. The
+  fetch is the careful part; read its moduledoc before touching it.
 - **`Web.IndexLive`** — the list page: create, open, delete.
-- **`Web.BoardLive`** — a single board: canvas, collaboration, presence, cursors.
+- **`Web.BoardLive`** — a single board: canvas, collaboration, presence,
+  cursors, image uploads, link unfurling.
 
 ### Routes
 
@@ -127,6 +149,43 @@ diffs to empty, so no work happens.
 
 Cursors are sent in canvas coordinates rather than screen pixels so they track
 each viewer's own pan and zoom.
+
+**Position in the annotation list is z-order** — etcher paints in array order —
+so the diff has to treat a reshuffle as a real change, and every delta carries
+an `"order"` list of all uuids that the client re-imposes with
+`setShapeOrder`. Keying the diff by uuid alone made a pure reorder look
+identical to no edit at all. Pinned by `test/board_delta_test.exs`.
+
+### Images and links
+
+Both features exist for the same reason: the whole annotation list is
+re-emitted on every edit, so anything living *inside* a shape is re-sent every
+time anything on the board changes.
+
+- **Images.** `BoardSync` registers `layer.setImageUploader`, feeding the file
+  to a hidden `live_file_input` via `this.upload/2`. `handle_image_progress/3`
+  stores it through `PhoenixKit.Modules.Storage` and pushes the URL back. The
+  form is load-bearing — `this.upload/2` dispatches a bubbling `input` event
+  and a form's `phx-change` is what carries it to the server. Request and
+  reply are paired **by order**, which is only sound because `uploadImage`
+  serialises pastes and `max_entries` is 1; a timed-out upload therefore stays
+  in the client queue as a tombstone rather than being spliced out, so a late
+  reply can't land on the wrong request.
+- **Links.** `layer.setLinkUnfurler` → `handle_event("board:unfurl", …)` →
+  `LinkPreview.unfurl/1`, replying with an SVG the client rasterises and sends
+  back through the image path above.
+
+**The unfurl fetches a URL a user pasted, from inside the server's network.**
+`LinkPreview.safe_uri/1` is the whole defence, and *every* hop of *both*
+fetchers (page and hero image) must go through it — which means Req's
+automatic redirect following stays off (`redirect: false`) and redirects are
+walked by hand. A fetcher that lets Req follow a `Location` checks the first
+address and then goes wherever it is told. The body cap is likewise enforced
+as the response streams (`into:`), not after it has all arrived.
+
+`handle_event("board:unfurl", …)` rescues: the contract is that a link which
+can't be previewed stays on the canvas as text, and a raise would instead take
+the board down.
 
 ### Client-side assets
 

@@ -1,7 +1,7 @@
 defmodule PhoenixKitBoards.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_boards"
 
   def project do
@@ -61,7 +61,15 @@ defmodule PhoenixKitBoards.MixProject do
 
   defp deps do
     [
-      pk_dep(:phoenix_kit, "~> 1.7"),
+      # 1.7.189, not a bare `~> 1.7`: `Board` does `use PhoenixKit.SchemaPrefix`
+      # and the migration calls
+      # `PhoenixKit.Migrations.Postgres.Helpers.uuid_v7_call/1` — both first
+      # shipped in core 1.7.189, and neither is guarded. `~> 1.7` admits
+      # 1.7.0, which resolves a core with no such module: a compile error in
+      # the consumer's build, not a degraded feature. (`PhoenixKit.Module`
+      # needs 1.7.46, `PubSubHelper` 1.7.28, `Dashboard.Tab` 1.7.21 — all
+      # covered by the same floor.)
+      pk_dep(:phoenix_kit, "~> 1.7.189"),
       {:phoenix_live_view, "~> 1.1"},
 
       # The infinite-canvas engine + annotation layer. The host already loads

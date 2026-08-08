@@ -225,12 +225,13 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // is pasted — but it is proof the transfer is alive, which is what
       // keeps the watchdog from giving up on a big slow upload.
       this.handleEvent("board:image-progress", ({ progress }) => {
-        const pending = (this.pendingUploads || [])[0];
+        // The first entry still waiting on an answer — a tombstone left by
+        // an earlier timeout is not it, and rearming it would do nothing.
+        const pending = (this.pendingUploads || []).find((p) => !p.settled);
         if (!pending) return;
         this.armUploadWatchdog(pending);
         // Feed Etcher's placeholder bar. The server reports 0-100; Etcher
-        // works in fractions. Paired with the head of the queue for the same
-        // reason the reply is — one upload runs at a time.
+        // works in fractions.
         if (typeof pending.onProgress === "function" && typeof progress === "number") {
           pending.onProgress(progress / 100);
         }
@@ -296,6 +297,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       const pending = (this.pendingUploads || []).shift();
       if (!pending) return;
       clearTimeout(pending.timer);
+      // A timed-out upload stays in the queue as a tombstone so this reply
+      // still lands on the request that produced it. Dropping it instead
+      // would shift the queue under a reply already in flight, and the next
+      // paste would resolve with the *previous* image's URL — a picture
+      // silently replaced by another one, which is worse than the fallback.
+      if (pending.settled) return;
       if (error) pending.reject(error);
       else pending.resolve(url);
     },
@@ -306,11 +313,15 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // Silence means the pipeline is broken (nothing wired up server-side, a
     // rejected entry, a dropped socket), and the alternative to noticing is
     // an image on the canvas whose bytes are never stored.
+    //
+    // The entry is marked rather than removed — see `settleUpload`. Its slot
+    // is reclaimed by the reply that eventually arrives, or by `destroyed`;
+    // a dropped socket, the case where no reply ever comes, tears the hook
+    // down anyway.
     armUploadWatchdog(pending) {
       clearTimeout(pending.timer);
       pending.timer = setTimeout(() => {
-        const idx = this.pendingUploads.indexOf(pending);
-        if (idx !== -1) this.pendingUploads.splice(idx, 1);
+        pending.settled = true;
         pending.reject("no word from the server about this upload");
       }, 15000);
     },

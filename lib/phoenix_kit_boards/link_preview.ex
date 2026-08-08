@@ -37,9 +37,23 @@ defmodule PhoenixKitBoards.LinkPreview do
   before a byte is sent — and again on each redirect, because a public host
   is free to redirect to a private one.
 
-  The rest is proportion: a 10s timeout, a 2MB cap, and HTML only. A link
-  preview is a nicety, and none of it is worth a hung request or a page of
-  arbitrary size buffered into memory.
+  The hero image is fetched the same way, by the same walk — an `og:image`
+  is as attacker-controlled as the page, and a hero that redirects into the
+  private range would reach it just as surely.
+
+  The rest is proportion: a 12s budget for the whole unfurl, a 2MB cap
+  enforced *as the body streams* rather than after it has all arrived, and
+  HTML only. A link preview is a nicety, and none of it is worth a hung
+  request or a page of arbitrary size buffered into memory.
+
+  ## Known limit
+
+  The guard resolves the host and then asks `Req` for the same host by name,
+  so a DNS answer that changes between the two — rebinding — is not caught.
+  Closing that means pinning the checked address and carrying the original
+  host through as a header and SNI name, which is a lot of machinery for a
+  surface only an admin can reach. It is a deliberate omission, not an
+  oversight.
   """
 
   require Logger
@@ -49,6 +63,15 @@ defmodule PhoenixKitBoards.LinkPreview do
   @timeout_ms 10_000
   @max_bytes 2 * 1024 * 1024
   @max_redirects 3
+
+  # One wall-clock budget for the whole unfurl — page, its redirects, and the
+  # hero. `unfurl/1` is called straight from the LiveView's `handle_event/3`,
+  # which has to answer and so cannot hand the work off, and a blocked
+  # LiveView processes nothing else meanwhile: not the user's own edits, not
+  # peers' deltas, not cursors. Per-request timeouts alone compound — four
+  # hops plus a hero is the better part of a minute — so the deadline is
+  # shared and each request gets whatever is left of it.
+  @budget_ms 12_000
 
   # Card proportions, in the same units the Scene is laid out in. The hero
   # takes about two thirds and the rest is the footer, which is where the
@@ -67,9 +90,11 @@ defmodule PhoenixKitBoards.LinkPreview do
   """
   @spec unfurl(String.t()) :: {:ok, map()} | {:error, term()}
   def unfurl(url) when is_binary(url) do
-    with {:ok, html, final_url} <- fetch(url),
+    deadline = deadline(@budget_ms)
+
+    with {:ok, html, final_url} <- fetch(url, @max_redirects, deadline),
          {:ok, meta} <- metadata(html, final_url) do
-      svg = meta |> inline_hero() |> scene() |> svg()
+      svg = meta |> inline_hero(deadline) |> scene() |> svg()
       {:ok, %{svg: svg, width: @card_w, height: @card_h}}
     end
   end
@@ -81,73 +106,138 @@ defmodule PhoenixKitBoards.LinkPreview do
   #
   # Best effort: a card with a title and no picture is still a card, so a
   # hero that won't load is dropped rather than failing the unfurl.
-  defp inline_hero(%{image: nil} = meta), do: meta
+  defp inline_hero(%{image: nil} = meta, _deadline), do: meta
 
-  defp inline_hero(%{image: src} = meta) do
-    case fetch_image(src) do
+  defp inline_hero(%{image: src} = meta, deadline) do
+    case fetch_image(src, @max_redirects, deadline) do
       {:ok, data_url} ->
         %{meta | image: data_url}
 
       {:error, reason} ->
-        Logger.debug("[boards] link preview hero dropped (#{inspect(reason)}): #{src}")
+        Logger.debug("[boards] link preview hero dropped (#{inspect(reason)}): #{inspect(src)}")
         %{meta | image: nil}
     end
   end
 
-  defp fetch_image(src) do
-    with {:ok, uri} <- safe_uri(src),
-         {:ok, %{status: 200, headers: headers, body: body}} <-
-           Req.get(URI.to_string(uri), receive_timeout: @timeout_ms, max_retries: 0) do
-      type = headers |> header("content-type") |> to_string() |> String.split(";") |> hd()
-
-      cond do
-        not String.starts_with?(type, "image/") -> {:error, {:not_an_image, type}}
-        byte_size(body) > @max_bytes -> {:error, :too_large}
-        true -> {:ok, "data:" <> type <> ";base64," <> Base.encode64(body)}
-      end
-    else
-      {:ok, %{status: status}} -> {:error, {:http_status, status}}
-      {:error, reason} -> {:error, reason}
-    end
+  # The hero goes through `walk/3` exactly like the page does. An `og:image`
+  # is attacker-controlled precisely as much as the page it was read from, so
+  # there is no version of this that gets to be the relaxed one.
+  defp fetch_image(src, redirects_left, deadline) do
+    walk(src, redirects_left, %{
+      deadline: deadline,
+      req_opts: [],
+      on_ok: fn headers, body, _uri -> inline_image(headers, body) end
+    })
   end
+
+  defp inline_image(_headers, :too_large), do: {:error, :too_large}
+
+  defp inline_image(headers, body) when is_binary(body) do
+    type = headers |> header("content-type") |> to_string() |> String.split(";") |> hd()
+
+    if String.starts_with?(type, "image/"),
+      do: {:ok, "data:" <> type <> ";base64," <> Base.encode64(body)},
+      else: {:error, {:not_an_image, type}}
+  end
+
+  defp inline_image(_headers, _body), do: {:error, :unexpected_body}
 
   # ── 1. Fetch ───────────────────────────────────────────────────────────────
 
   @doc false
-  def fetch(url, redirects_left \\ @max_redirects)
+  def fetch(url, redirects_left \\ @max_redirects, deadline \\ nil)
 
-  def fetch(_url, redirects_left) when redirects_left < 0, do: {:error, :too_many_redirects}
+  def fetch(url, redirects_left, nil), do: fetch(url, redirects_left, deadline(@budget_ms))
 
-  def fetch(url, redirects_left) do
-    with {:ok, uri} <- safe_uri(url) do
+  def fetch(url, redirects_left, deadline) do
+    walk(url, redirects_left, %{
+      deadline: deadline,
+      req_opts: [
+        headers: [
+          {"accept", "text/html,application/xhtml+xml"},
+          {"user-agent", "PhoenixKitBoards link preview"}
+        ]
+      ],
+      on_ok: &usable_page/3
+    })
+  end
+
+  # ── The guarded walk ───────────────────────────────────────────────────────
+  #
+  # One implementation, used by both the page fetch and the hero fetch. They
+  # differ only in the headers they send and what they do with a 200, and
+  # `opts` carries exactly that — everything load-bearing is here.
+  #
+  # That is deliberate rather than tidy. Redirects are followed by hand so
+  # every hop gets the same address check as the first, because a public host
+  # redirecting to 127.0.0.1 is the standard way around a naive guard. When
+  # the two fetchers were written out separately, one of them was given
+  # `redirect: false` and the other was not, and the one that was not checked
+  # the first address and then followed a `Location` anywhere it was pointed.
+  # There is one of these so there is nothing to keep in sync.
+  defp walk(_url, redirects_left, _opts) when redirects_left < 0,
+    do: {:error, :too_many_redirects}
+
+  defp walk(url, redirects_left, opts) do
+    with {:ok, uri} <- safe_uri(url),
+         {:ok, timeout} <- time_left(opts.deadline) do
       req =
         Req.new(
-          url: URI.to_string(uri),
-          # Redirects are followed by hand so each hop gets the same address
-          # check as the first — a public host redirecting to 127.0.0.1 is
-          # the standard way around a naive guard.
-          redirect: false,
-          receive_timeout: @timeout_ms,
-          max_retries: 0,
-          headers: [
-            {"accept", "text/html,application/xhtml+xml"},
-            {"user-agent", "PhoenixKitBoards link preview"}
-          ]
+          [
+            url: URI.to_string(uri),
+            redirect: false,
+            receive_timeout: timeout,
+            max_retries: 0,
+            into: capped_into()
+          ] ++ opts.req_opts
         )
 
-      case Req.get(req) do
-        {:ok, %{status: status, headers: headers}} when status in 300..399 ->
-          follow_redirect(headers, uri, redirects_left)
+      req |> Req.get() |> dispatch(uri, redirects_left, opts)
+    end
+  end
 
-        {:ok, %{status: 200, headers: headers, body: body}} ->
-          usable_page(headers, body, uri)
+  defp dispatch({:ok, %{status: status, headers: headers}}, uri, redirects_left, opts)
+       when status in 300..399 do
+    with {:ok, target} <- redirect_target(headers, uri),
+         do: walk(target, redirects_left - 1, opts)
+  end
 
-        {:ok, %{status: status}} ->
-          {:error, {:http_status, status}}
+  defp dispatch({:ok, %{status: 200, headers: headers, body: body}}, uri, _redirects_left, opts),
+    do: opts.on_ok.(headers, body, uri)
 
-        {:error, reason} ->
-          {:error, {:unreachable, reason}}
-      end
+  defp dispatch({:ok, %{status: status}}, _uri, _redirects_left, _opts),
+    do: {:error, {:http_status, status}}
+
+  defp dispatch({:error, reason}, _uri, _redirects_left, _opts),
+    do: {:error, {:unreachable, reason}}
+
+  # Cap the body as it arrives instead of after the fact. Left to itself Req
+  # reads the whole response into memory and only then hands it over, so a
+  # URL serving gigabytes costs gigabytes before anything gets to reject it.
+  # Halting mid-stream drops the connection at the limit.
+  #
+  # Streaming also turns Req's decompression off, which is why nothing here
+  # asks for it: the `compressed` step only sets `accept-encoding` when the
+  # body is buffered, so a server has no reason to send an encoding that
+  # would then arrive undecoded.
+  defp capped_into do
+    fn {:data, chunk}, {req, resp} ->
+      body = resp.body <> chunk
+
+      if byte_size(body) > @max_bytes,
+        do: {:halt, {req, %{resp | body: :too_large}}},
+        else: {:cont, {req, %{resp | body: body}}}
+    end
+  end
+
+  # ── Budget ─────────────────────────────────────────────────────────────────
+
+  defp deadline(budget_ms), do: System.monotonic_time(:millisecond) + budget_ms
+
+  defp time_left(deadline) do
+    case deadline - System.monotonic_time(:millisecond) do
+      left when left > 0 -> {:ok, min(left, @timeout_ms)}
+      _ -> {:error, :timeout}
     end
   end
 
@@ -158,10 +248,10 @@ defmodule PhoenixKitBoards.LinkPreview do
     end
   end
 
-  defp follow_redirect(headers, from, redirects_left) do
+  defp redirect_target(headers, from) do
     case header(headers, "location") do
       nil -> {:error, :redirect_without_location}
-      loc -> from |> URI.merge(loc) |> URI.to_string() |> fetch(redirects_left - 1)
+      loc -> {:ok, from |> URI.merge(loc) |> URI.to_string()}
     end
   end
 
@@ -173,10 +263,10 @@ defmodule PhoenixKitBoards.LinkPreview do
       else: {:error, {:not_html, type}}
   end
 
-  defp ensure_small_enough(body) when is_binary(body) do
-    if byte_size(body) <= @max_bytes, do: :ok, else: {:error, :too_large}
-  end
-
+  # The cap is enforced as the body streams (see `capped_into/0`); this is
+  # where a stream halted at the limit becomes an error the caller reports.
+  defp ensure_small_enough(:too_large), do: {:error, :too_large}
+  defp ensure_small_enough(body) when is_binary(body), do: :ok
   defp ensure_small_enough(_body), do: {:error, :unexpected_body}
 
   defp header(headers, name) do
@@ -223,6 +313,14 @@ defmodule PhoenixKitBoards.LinkPreview do
   # Carrier-grade NAT — 100.64.0.0/10.
   def private_address?({100, b, _, _}) when b >= 64 and b <= 127, do: true
   def private_address?({0, _, _, _}), do: true
+  # IETF protocol assignments — 192.0.0.0/24.
+  def private_address?({192, 0, 0, _}), do: true
+  # Benchmarking — 198.18.0.0/15.
+  def private_address?({198, b, _, _}) when b >= 18 and b <= 19, do: true
+  # Multicast (224.0.0.0/4) and the reserved 240.0.0.0/4, which takes the
+  # 255.255.255.255 broadcast address with it. Neither is somewhere a link
+  # preview has any business sending a request.
+  def private_address?({a, _, _, _}) when a >= 224, do: true
   def private_address?(_), do: false
 
   # ── 2. Metadata ────────────────────────────────────────────────────────────

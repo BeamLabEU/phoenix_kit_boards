@@ -52,12 +52,17 @@ defmodule PhoenixKitBoards.Migrations do
       initial when initial < opts.version ->
         change((initial + 1)..opts.version, :up, opts)
 
-      _ ->
+      initial ->
         # Already stamped at or beyond the target. Re-stamp anyway: an
         # unstamped table that matched a known shape resolved to a version by
         # inspection, and this writes that conclusion down so the next read
         # doesn't have to infer it again.
-        record_version(opts, opts.version)
+        #
+        # `max/2`, not `opts.version`: the table can be *ahead* of the target
+        # (`up(version: 1)` against a V2 install runs no steps), and stamping
+        # the target there would label a V2 table "1" — the same "a version
+        # this table does not have" lie the `:incompatible` clause refuses.
+        record_version(opts, max(initial, opts.version))
     end
 
     :ok

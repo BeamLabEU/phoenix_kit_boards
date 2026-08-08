@@ -217,9 +217,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       result = consume_uploaded_entry(socket, entry, &{:ok, store_image(&1.path, entry, socket)})
       {:noreply, reply_to_upload(socket, result)}
     else
-      # Feeds the bar on the half-transparent placeholder Etcher drew as soon
-      # as the paste landed. Without it a large screenshot looks like nothing
-      # is happening for as long as the transfer takes.
+      # Nothing is drawn from this — Etcher places the shape immediately and
+      # uploads behind it, so there is no bar to fill. It is the client's
+      # proof that the transfer is still alive, which is what stops
+      # `armUploadWatchdog` giving up on a big slow upload.
       {:noreply, push_event(socket, "board:image-progress", %{"progress" => entry.progress})}
     end
   end
@@ -241,7 +242,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
     with {:ok, user_uuid} <- require_user(user_uuid),
          {:ok, checksum} <- file_checksum(path),
-         {:ok, file} <- store_or_reuse(path, user_uuid, checksum, entry.client_name),
+         {:ok, file} <- store(path, user_uuid, checksum, entry),
          url when is_binary(url) <- Storage.get_public_url(file) do
       {:ok, url}
     else
@@ -250,31 +251,42 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  # Same per-user dedupe the upload controller does, so pasting the same
-  # screenshot onto two boards stores one file.
-  defp store_or_reuse(path, user_uuid, checksum, client_name) do
-    case Storage.get_file_by_user_checksum(
-           Storage.calculate_user_file_checksum(user_uuid, checksum)
-         ) do
-      nil ->
-        ext = client_name |> Path.extname() |> String.replace_leading(".", "")
-
-        path
-        |> Storage.store_file_in_buckets("image", user_uuid, checksum, ext, client_name)
-        |> normalize_stored()
-
-      existing ->
-        {:ok, existing}
-    end
+  # `store_file_in_buckets/6` does the per-user dedupe itself, so pasting the
+  # same screenshot onto two boards still stores one file — and it does more
+  # than a lookup would: on a hit it checks the object is *still in the
+  # bucket* and re-stores it (or recreates a lost instance record) when it
+  # isn't. Short-circuiting on `get_file_by_user_checksum/1` here would skip
+  # that repair, and a file that had gone missing from storage would hand
+  # back a dead URL on every subsequent paste, forever.
+  defp store(path, user_uuid, checksum, entry) do
+    path
+    |> Storage.store_file_in_buckets(
+      "image",
+      user_uuid,
+      checksum,
+      ext_for(entry),
+      entry.client_name
+    )
+    |> normalize_stored()
   end
 
   # `store_file_in_buckets/6` answers `{:ok, file, :duplicate}` when it
-  # recognises the bytes — the per-user check above doesn't catch that, since
-  # it keys on the user. Same file either way, so flatten to `{:ok, file}`
+  # recognises the bytes. Same file either way, so flatten to `{:ok, file}`
   # rather than let the 3-tuple fall through as a failure and send the client
   # back to embedding the image it just uploaded successfully.
   defp normalize_stored({:ok, file, _dedupe}), do: {:ok, file}
   defp normalize_stored(other), do: other
+
+  # The extension decides how the stored object is named and served, and the
+  # filename is the unreliable half of an entry — a clipboard paste is not
+  # guaranteed to carry a usable one, which is why `@image_accept` lists MIME
+  # types too. Fall back to the type when the name has nothing to give.
+  defp ext_for(entry) do
+    case entry.client_name |> Path.extname() |> String.replace_leading(".", "") do
+      "" -> entry.client_type |> to_string() |> MIME.extensions() |> List.first() || "bin"
+      ext -> ext
+    end
+  end
 
   defp file_checksum(path) do
     case File.read(path) do
@@ -360,10 +372,15 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       name = "pasted-image-#{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}.#{ext}"
       path = Path.join(System.tmp_dir!(), name)
 
+      # Stored through the same path an upload takes, so this inherits the
+      # re-store-on-missing repair `store/4` exists for rather than quietly
+      # skipping it. `ext_for/1` reads these two fields and nothing else.
+      entry = %{client_name: name, client_type: MIME.type(ext)}
+
       try do
         with :ok <- File.write(path, bytes),
              {:ok, checksum} <- file_checksum(path),
-             {:ok, file} <- store_or_reuse(path, user_uuid, checksum, name),
+             {:ok, file} <- store(path, user_uuid, checksum, entry),
              url when is_binary(url) <- Storage.get_public_url(file) do
           {:ok, url}
         else
@@ -469,19 +486,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # entry exists at all.
   def handle_event("board_image_selected", _params, socket), do: {:noreply, socket}
 
-  # A pasted URL. Renders a preview card, stores it like any other board
-  # image, and replies with its URL — the client swaps the placeholder text
-  # shape for it. Replying with an error is not a failure path worth
-  # shouting about: the link is already on the canvas as text.
+  # A pasted URL. Renders a preview card as an SVG and replies with it; the
+  # client rasterises that, sends it back through the image-upload path
+  # above, and swaps the pasted text for the stored card. Replying with an
+  # error is not a failure path worth shouting about — without an answer
+  # Etcher simply leaves the link on the canvas as text.
+  #
+  # Rescued rather than trusted to return: the whole point of the fallback is
+  # that a bad link costs the user nothing, and an unhandled raise anywhere
+  # in the fetch/parse/render chain would instead take the board down and
+  # make them reconnect. Untrusted input reaches every step of it.
   def handle_event("board:unfurl", %{"url" => url}, socket) when is_binary(url) do
-    case LinkPreview.unfurl(url) do
-      {:ok, %{svg: svg, width: w, height: h}} ->
-        {:reply, %{"svg" => svg, "width" => w, "height" => h}, socket}
-
-      {:error, reason} ->
-        Logger.info("[boards] link preview declined for #{url}: #{inspect(reason)}")
-        {:reply, %{"error" => to_string(elem_or(reason))}, socket}
-    end
+    {:reply, unfurl_reply(url), socket}
   end
 
   def handle_event("board:unfurl", _params, socket),
@@ -567,6 +583,24 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   defp cursor_tool(_), do: nil
+
+  defp unfurl_reply(url) do
+    case LinkPreview.unfurl(url) do
+      {:ok, %{svg: svg, width: w, height: h}} ->
+        %{"svg" => svg, "width" => w, "height" => h}
+
+      {:error, reason} ->
+        Logger.info("[boards] link preview declined for #{inspect(url)}: #{inspect(reason)}")
+        %{"error" => to_string(elem_or(reason))}
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "[boards] link preview crashed for #{inspect(url)}: #{Exception.message(error)}"
+      )
+
+      %{"error" => "unfurl_failed"}
+  end
 
   defp elem_or(reason) when is_tuple(reason), do: elem(reason, 0)
   defp elem_or(reason), do: reason
