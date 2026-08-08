@@ -684,7 +684,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         this.cursors[p.id] = c;
       }
 
-      this.setCursorTool(c, p.name, p.tool);
+      this.setCursorTool(c, p.name, p.color, p.tool);
 
       const now = now_();
 
@@ -782,31 +782,68 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // arrows. Etcher owns the glyphs — they are the same ones it puts on the
     // local cursor — so nothing here has to know the set of tools, and one it
     // has no glyph for simply reads as an arrow.
-    // The glyph for a peer's tool, drawn inside their name tag.
+    // A peer drawn as the cursor they are actually holding.
     //
-    // Etcher owns the glyphs — they are the same ones it puts on the local
-    // cursor while a tool is held — so nothing here knows the set of tools,
-    // and one it has no glyph for simply reads as a bare name.
+    // Etcher composes this exact shape for the local cursor — a crosshair
+    // with the tool's glyph tucked below-right of it — so someone holding the
+    // marker sees a marker cursor. A peer holding the marker should look like
+    // that too, in their own colour, rather than as a generic arrow with the
+    // tool named in a label: the point of showing the tool is that it is
+    // recognisable at a glance, and a shape is, where a word beside an arrow
+    // is something you have to stop and read.
     //
-    // Inside the tag rather than floating beside the arrow: the tag is
-    // already the one piece of chrome that belongs to this person, it gives
-    // the mark a solid background to stay legible against, and there is
-    // nowhere beside an arrow to put something that doesn't collide with the
-    // name at some zoom.
-    toolBadge(tool) {
+    // Etcher owns the glyphs, so nothing here knows the set of tools. A tool
+    // it has no glyph for — and the plain pointer — fall back to the arrow,
+    // which is what the local cursor does in that case too.
+    cursorMarkup(name, color, tool) {
+      const fill = escapeAttr(color);
+      // Clear of whichever mark is drawn. The tool cursor reaches further
+      // down and right than the arrow does — its glyph sits below-right of
+      // the crosshair — and a tag placed for the arrow lands straight on top
+      // of it.
+      const tagAt = (left, top) =>
+        `<span data-pk-tag style="position:absolute;left:${left}px;top:${top}px;` +
+        `background:${fill};color:#fff;font:600 11px/1.4 system-ui,sans-serif;` +
+        `padding:1px 6px;border-radius:6px;white-space:nowrap;` +
+        `box-shadow:0 1px 2px rgba(0,0,0,.25)">${escapeHtml(name)}</span>`;
+
+      const badge = this.toolGlyph(tool);
+      if (!badge) {
+        return (
+          `<svg width="18" height="18" viewBox="0 0 24 24" fill="${fill}" ` +
+          `style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))">` +
+          `<path d="M4 2 L20 12 L13 13 L11 20 Z"/></svg>` + tagAt(14, 12)
+        );
+      }
+
+      const tag = tagAt(22, 20);
+
+      // Mirrors etcher's own composition: a white underlay under everything
+      // so it stays legible over a dark photo or a busy drawing, then the
+      // mark itself. Offset so the crosshair's centre — the actual pointer
+      // position — lands on the point we were told about, rather than the
+      // corner of the box.
+      const cross = '<path d="M6 1.5v9M1.5 6h9"/>';
+      return (
+        `<svg width="30" height="30" viewBox="0 0 30 30" ` +
+        `style="position:absolute;left:-6px;top:-6px;overflow:visible;` +
+        `filter:drop-shadow(0 1px 1px rgba(0,0,0,.25))">` +
+        `<g fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round">${cross}</g>` +
+        `<g fill="none" stroke="${fill}" stroke-width="1.5" stroke-linecap="round">${cross}</g>` +
+        `<g transform="translate(14 14) scale(0.65)">` +
+        `<g fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" ` +
+        `stroke-linejoin="round">${badge}</g>` +
+        `<g fill="none" stroke="${fill}" stroke-width="2" stroke-linecap="round" ` +
+        `stroke-linejoin="round">${badge}</g></g></svg>` + tag
+      );
+    },
+
+    // The raw glyph for a tool, or "" when there isn't one.
+    toolGlyph(tool) {
       if (!tool) return "";
       const layer = this.layer();
       if (!layer || typeof layer.toolBadge !== "function") return "";
-
-      let badge;
-      try { badge = layer.toolBadge(tool); } catch (_) { return ""; }
-      if (!badge) return "";
-
-      return (
-        `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" ` +
-        `stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" ` +
-        `style="vertical-align:-2px;margin-right:4px">${badge}</svg>`
-      );
+      try { return layer.toolBadge(tool) || ""; } catch (_) { return ""; }
     },
 
     buildCursor(name, color, tool) {
@@ -817,25 +854,18 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         // set, so an early or late packet visibly changes the cursor's speed,
         // and the two mechanisms would fight for the same property.
         "position:absolute;top:0;left:0;pointer-events:none;will-change:transform;z-index:40;";
-      wrap.innerHTML =
-        `<svg width="18" height="18" viewBox="0 0 24 24" fill="${escapeAttr(color)}" ` +
-        `style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))"><path d="M4 2 L20 12 L13 13 L11 20 Z"/></svg>` +
-        `<span data-pk-tag style="position:absolute;left:14px;top:12px;background:${escapeAttr(color)};color:#fff;` +
-        `font:600 11px/1.4 system-ui,sans-serif;padding:1px 6px;border-radius:6px;white-space:nowrap;">` +
-        `${this.toolBadge(tool)}${escapeHtml(name)}</span>`;
+      wrap.innerHTML = this.cursorMarkup(name, color, tool);
       return wrap;
     },
 
-    // Redraw a peer's tag when they pick up something else. Guarded on the
-    // tool actually changing: this runs on every packet, and rewriting the
-    // tag 60 times a second would be pure churn.
-    setCursorTool(c, name, tool) {
+    // Redraw a peer when they pick up something else. Guarded on the tool
+    // actually changing: this runs on every packet, and rebuilding the cursor
+    // sixty times a second would be pure churn.
+    setCursorTool(c, name, color, tool) {
       const next = tool || null;
       if (c.tool === next) return;
       c.tool = next;
-
-      const tag = c.el.querySelector("[data-pk-tag]");
-      if (tag) tag.innerHTML = this.toolBadge(next) + escapeHtml(name);
+      c.el.innerHTML = this.cursorMarkup(name, color, next);
     },
 
     remove(id) {

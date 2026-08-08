@@ -563,29 +563,49 @@ function makeTagHook(badges) {
 
 const BADGES = { marker: "<path d='M1 1'/>", text: "<path d='M2 2'/>" };
 
+// The arrow, for reference: what a peer looks like with no tool in hand.
+const ARROW = "M4 2 L20 12 L13 13 L11 20 Z";
+
 {
   const hook = makeTagHook(BADGES);
   hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "marker" });
 
   const c = hook.cursors["p1"];
+  const html = c.el.innerHTML;
+
   assert.strictEqual(c.tool, "marker", "remembered what they are holding");
-  assert.ok(c.el.innerHTML.includes(BADGES.marker), "and drew it");
-  assert.ok(c.el.innerHTML.includes("Ada"), "next to their name");
+  assert.ok(html.includes(BADGES.marker), "drawn as the marker cursor");
+  assert.ok(!html.includes(ARROW), "not as a generic arrow");
+  // Their colour, not etcher's black — that is what tells two people apart.
+  assert.ok(html.includes('stroke="#f00"'), "in their own colour");
+  assert.ok(html.includes('stroke="#fff"'), "over a white underlay, to stay legible");
+  assert.ok(html.includes("Ada"), "and still named");
   hook._restore();
 }
 
-// Picking up something else redraws the tag — but only then. This runs on
-// every packet, and rewriting the tag sixty times a second would be churn.
+// Someone with no tool in hand keeps the arrow, which is what the local
+// cursor does in that case too.
+{
+  const hook = makeTagHook(BADGES);
+  hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00" });
+  const html = hook.cursors["p1"].el.innerHTML;
+  assert.ok(html.includes(ARROW), "arrow when holding nothing");
+  assert.ok(html.includes("Ada"));
+  hook._restore();
+}
+
+// Picking up something else redraws them — but only then. This runs on every
+// packet, and rebuilding the cursor sixty times a second would be churn.
 {
   const hook = makeTagHook(BADGES);
   hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "marker" });
   const c = hook.cursors["p1"];
 
   let writes = 0;
-  const tag = c.el.querySelector();
-  Object.defineProperty(tag, "innerHTML", {
-    set(v) { writes++; this._v = v; },
-    get() { return this._v || ""; }
+  let html = c.el.innerHTML;
+  Object.defineProperty(c.el, "innerHTML", {
+    set(v) { writes++; html = v; },
+    get() { return html; }
   });
 
   hook.update({ id: "p1", x: 1, y: 1, name: "Ada", color: "#f00", tool: "marker" });
@@ -594,42 +614,53 @@ const BADGES = { marker: "<path d='M1 1'/>", text: "<path d='M2 2'/>" };
 
   hook.update({ id: "p1", x: 3, y: 3, name: "Ada", color: "#f00", tool: "text" });
   assert.strictEqual(writes, 1, "changed tool, one redraw");
-  assert.ok(tag.innerHTML.includes(BADGES.text));
-  assert.ok(tag.innerHTML.includes("Ada"), "the name survives the redraw");
+  assert.ok(c.el.innerHTML.includes(BADGES.text), "now the text cursor");
+  assert.ok(!c.el.innerHTML.includes(BADGES.marker), "and no longer the marker");
+  assert.ok(c.el.innerHTML.includes("Ada"), "the name survives the redraw");
 
-  // Putting the tool down leaves a plain named cursor rather than a stale
-  // glyph.
+  // Putting the tool down returns them to the arrow rather than leaving a
+  // stale glyph.
   hook.update({ id: "p1", x: 4, y: 4, name: "Ada", color: "#f00" });
   assert.strictEqual(writes, 2);
-  assert.ok(!tag.innerHTML.includes(BADGES.text), "glyph gone");
-  assert.ok(tag.innerHTML.includes("Ada"));
+  assert.ok(!c.el.innerHTML.includes(BADGES.text), "glyph gone");
+  assert.ok(c.el.innerHTML.includes(ARROW), "back to the arrow");
   hook._restore();
 }
 
 // A tool etcher has no glyph for, and an etcher too old to have any, both
-// read as a plain named cursor rather than breaking the tag.
+// read as a plain named arrow rather than breaking the cursor.
 {
   const hook = makeTagHook(BADGES);
   hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "nosuchtool" });
-  assert.ok(hook.cursors["p1"].el.innerHTML.includes("Ada"));
+  const html = hook.cursors["p1"].el.innerHTML;
+  assert.ok(html.includes(ARROW), "unknown tool falls back to the arrow");
+  assert.ok(html.includes("Ada"));
   hook._restore();
 }
 {
   const hook = makeHook(makeLayer()); // no toolBadge on the layer at all
   hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "marker" });
   assert.deepStrictEqual(arrows(hook), ["p1"], "still drawn");
+  assert.ok(hook.cursors["p1"].el.innerHTML.includes(ARROW));
 }
 
-// A name is escaped whether or not a glyph is drawn beside it — the redraw
-// path builds the tag's markup by hand and must not become a way in.
+// The markup is built by hand on both paths, so neither may become a way in.
 {
   const hook = makeTagHook(BADGES);
-  hook.update({ id: "p1", x: 0, y: 0, name: "<img src=x onerror=alert(1)>", color: "#f00", tool: "marker" });
-  hook.update({ id: "p1", x: 1, y: 1, name: "<img src=x onerror=alert(1)>", color: "#f00", tool: "text" });
+  const evil = "<img src=x onerror=alert(1)>";
 
-  const html = hook.cursors["p1"].el.querySelector().innerHTML;
-  assert.ok(!html.includes("<img"), `unescaped name reached the tag: ${html}`);
+  hook.update({ id: "p1", x: 0, y: 0, name: evil, color: "#f00", tool: "marker" });
+  assert.ok(!hook.cursors["p1"].el.innerHTML.includes("<img"), "escaped when first drawn");
+
+  hook.update({ id: "p1", x: 1, y: 1, name: evil, color: "#f00", tool: "text" });
+  const html = hook.cursors["p1"].el.innerHTML;
+  assert.ok(!html.includes("<img"), `unescaped name survived the redraw: ${html}`);
   assert.ok(html.includes("&lt;img"), "escaped instead");
+
+  // The colour is interpolated into a style attribute and into stroke=""; a
+  // peer's colour comes from the server, but it is still markup being built.
+  hook.update({ id: "p2", x: 0, y: 0, name: "Bob", color: '"><script>x</script>', tool: "marker" });
+  assert.ok(!hook.cursors["p2"].el.innerHTML.includes("<script>"), "colour escaped too");
   hook._restore();
 }
 
