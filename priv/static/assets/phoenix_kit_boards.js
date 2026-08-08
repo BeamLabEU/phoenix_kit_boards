@@ -603,7 +603,11 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
           // own: it IS this person's cursor, just drawn differently. Sending
           // it separately would mean two streams racing to say where the same
           // person is, and a moment showing both.
-          const move = { x: pt.x, y: pt.y, pointer: this.pointing() };
+          // What they are holding rides along with where they are, for the
+          // same reason the red pointer does: it is a fact about this
+          // person's cursor, and a stream of its own would race with this
+          // one and show the wrong tool for a moment on every change.
+          const move = { x: pt.x, y: pt.y, pointer: this.pointing(), tool: this.tool() };
 
           // Straight down the channel when there is one — that is the whole
           // point of having it. Otherwise back through the LiveView, which
@@ -613,6 +617,13 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
           }
         }
       } catch (_) {}
+    },
+
+    // Which tool this user is holding, or null for the plain pointer.
+    tool() {
+      const layer = this.layer();
+      if (!layer || typeof layer.getTool !== "function") return null;
+      try { return layer.getTool() || null; } catch (_) { return null; }
     },
 
     // Is the local user presenting with the red pointer right now?
@@ -654,7 +665,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       let c = this.cursors[p.id];
       if (!c) {
         c = {
-          el: this.buildCursor(p.name, p.color),
+          el: this.buildCursor(p.name, p.color, p.tool),
+          tool: p.tool || null,
           lastSeen: 0,
           // Canvas coordinates throughout — converted to screen once per
           // frame, so a peer's cursor stays on the spot it is pointing at
@@ -671,6 +683,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         this.el.appendChild(c.el);
         this.cursors[p.id] = c;
       }
+
+      this.setCursorTool(c, p.name, p.tool);
 
       const now = now_();
 
@@ -763,7 +777,39 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       return true;
     },
 
-    buildCursor(name, color) {
+    // The glyph for a peer's tool, drawn in their colour beside their arrow,
+    // so the board shows what everyone is holding rather than five identical
+    // arrows. Etcher owns the glyphs — they are the same ones it puts on the
+    // local cursor — so nothing here has to know the set of tools, and one it
+    // has no glyph for simply reads as an arrow.
+    // The glyph for a peer's tool, drawn inside their name tag.
+    //
+    // Etcher owns the glyphs — they are the same ones it puts on the local
+    // cursor while a tool is held — so nothing here knows the set of tools,
+    // and one it has no glyph for simply reads as a bare name.
+    //
+    // Inside the tag rather than floating beside the arrow: the tag is
+    // already the one piece of chrome that belongs to this person, it gives
+    // the mark a solid background to stay legible against, and there is
+    // nowhere beside an arrow to put something that doesn't collide with the
+    // name at some zoom.
+    toolBadge(tool) {
+      if (!tool) return "";
+      const layer = this.layer();
+      if (!layer || typeof layer.toolBadge !== "function") return "";
+
+      let badge;
+      try { badge = layer.toolBadge(tool); } catch (_) { return ""; }
+      if (!badge) return "";
+
+      return (
+        `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" ` +
+        `stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" ` +
+        `style="vertical-align:-2px;margin-right:4px">${badge}</svg>`
+      );
+    },
+
+    buildCursor(name, color, tool) {
       const wrap = document.createElement("div");
       wrap.style.cssText =
         // Deliberately no CSS transition. The position is interpolated per
@@ -774,10 +820,22 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       wrap.innerHTML =
         `<svg width="18" height="18" viewBox="0 0 24 24" fill="${escapeAttr(color)}" ` +
         `style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))"><path d="M4 2 L20 12 L13 13 L11 20 Z"/></svg>` +
-        `<span style="position:absolute;left:14px;top:12px;background:${escapeAttr(color)};color:#fff;` +
+        `<span data-pk-tag style="position:absolute;left:14px;top:12px;background:${escapeAttr(color)};color:#fff;` +
         `font:600 11px/1.4 system-ui,sans-serif;padding:1px 6px;border-radius:6px;white-space:nowrap;">` +
-        `${escapeHtml(name)}</span>`;
+        `${this.toolBadge(tool)}${escapeHtml(name)}</span>`;
       return wrap;
+    },
+
+    // Redraw a peer's tag when they pick up something else. Guarded on the
+    // tool actually changing: this runs on every packet, and rewriting the
+    // tag 60 times a second would be pure churn.
+    setCursorTool(c, name, tool) {
+      const next = tool || null;
+      if (c.tool === next) return;
+      c.tool = next;
+
+      const tag = c.el.querySelector("[data-pk-tag]");
+      if (tag) tag.innerHTML = this.toolBadge(next) + escapeHtml(name);
     },
 
     remove(id) {

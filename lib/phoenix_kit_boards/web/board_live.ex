@@ -536,23 +536,37 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # A local pointer move → broadcast our cursor (canvas coords) to peers.
   #
-  # `pointer` says this person has the red pointer armed, so peers should draw
-  # them as a laser dot rather than as an arrow with their name on it. It
-  # rides the cursor message instead of having one of its own because it IS
-  # their cursor — a separate stream would mean two messages racing to say
-  # where the same person is.
+  # This is the FALLBACK path. Cursors normally go over the board's own
+  # channel, which doesn't come through here at all; this is what a host that
+  # hasn't mounted that socket still gets.
+  #
+  # `pointer` says this person has the red pointer armed, so peers draw them
+  # as a laser dot rather than an arrow with their name on it, and `tool` is
+  # what they are holding. Both ride the cursor message instead of having one
+  # of their own because both are facts about this person's cursor — separate
+  # streams would race with this one and show the wrong thing for a moment on
+  # every change.
   def handle_event("cursor:move", %{"x" => x, "y" => y} = params, socket) do
-    pointer = params["pointer"] == true
+    meta = %{pointer: params["pointer"] == true, tool: cursor_tool(params["tool"])}
 
     broadcast(
       socket.assigns.topic,
-      {:board_cursor, socket.assigns.me.id, x, y, pointer, self()}
+      {:board_cursor, socket.assigns.me.id, x, y, meta, self()}
     )
 
     {:noreply, socket}
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # Arrives from a browser, so it can be anything. Bounded and constrained to
+  # the shape a tool key has — it is relayed to every peer and ends up in a
+  # DOM lookup, so an arbitrary string has no business travelling.
+  defp cursor_tool(tool) when is_binary(tool) do
+    if byte_size(tool) <= 32 and String.match?(tool, ~r/\A[a-z][a-z0-9_]*\z/), do: tool
+  end
+
+  defp cursor_tool(_), do: nil
 
   defp elem_or(reason) when is_tuple(reason), do: elem(reason, 0)
   defp elem_or(reason), do: reason
@@ -616,10 +630,13 @@ defmodule PhoenixKitBoards.Web.BoardLive do
      |> push_event("cursor:remove", %{id: peer_id})}
   end
 
-  def handle_info({:board_cursor, _id, _x, _y, _pointer, from}, socket) when from == self(),
+  def handle_info({:board_cursor, _id, _x, _y, _meta, from}, socket) when from == self(),
     do: {:noreply, socket}
 
-  def handle_info({:board_cursor, id, x, y, pointer, _from}, socket) do
+  # Everything about a cursor except where it is travels in one map, so
+  # telling peers something new about it doesn't mean another element on the
+  # message and another clause below to read the old shape.
+  def handle_info({:board_cursor, id, x, y, meta, _from}, socket) when is_map(meta) do
     peer = Map.get(socket.assigns.peers, id, %{name: "Guest", color: "#64748b"})
 
     {:noreply,
@@ -629,18 +646,24 @@ defmodule PhoenixKitBoards.Web.BoardLive do
        y: y,
        name: peer.name,
        color: peer.color,
-       pointer: pointer
+       pointer: meta[:pointer] == true,
+       tool: meta[:tool]
      })}
   end
 
-  # A peer still running the previous release sends the shorter message. Read
-  # it as "not pointing" rather than crashing the board for everyone on it —
-  # during a rolling deploy both shapes are on the topic at once.
+  # Peers still running an earlier release send the older shapes: a bare
+  # `pointer` boolean, or nothing at all. Read rather than crashing the board
+  # for everyone on it — during a rolling deploy several shapes are on the
+  # topic at once.
+  def handle_info({:board_cursor, id, x, y, pointer, from}, socket) when is_boolean(pointer) do
+    handle_info({:board_cursor, id, x, y, %{pointer: pointer, tool: nil}, from}, socket)
+  end
+
   def handle_info({:board_cursor, _id, _x, _y, from}, socket) when from == self(),
     do: {:noreply, socket}
 
   def handle_info({:board_cursor, id, x, y, from}, socket) do
-    handle_info({:board_cursor, id, x, y, false, from}, socket)
+    handle_info({:board_cursor, id, x, y, %{pointer: false, tool: nil}, from}, socket)
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}

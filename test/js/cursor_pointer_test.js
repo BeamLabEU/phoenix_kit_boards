@@ -132,7 +132,14 @@ function makeHook(layer) {
 
 global.document = {
   createElement() {
-    return { style: { cssText: "" }, innerHTML: "", parentNode: null };
+    const el = { style: { cssText: "" }, innerHTML: "", parentNode: null };
+    // The name tag, which the tool glyph is drawn into. Every cursor has one
+    // in a browser, so the stand-in always has one too — otherwise a change
+    // that redrew it more often than it should would surface here as a
+    // TypeError rather than as the assertion that describes the problem.
+    el._tag = { innerHTML: "" };
+    el.querySelector = () => el._tag;
+    return el;
   }
 };
 
@@ -480,7 +487,7 @@ const xOf = (c) => {
   hook.flushMove();
   assert.strictEqual(hook.pushed.length, 1, "fell back to the LiveView");
   assert.strictEqual(hook.pushed[0].name, "cursor:move");
-  assert.deepStrictEqual(hook.pushed[0].payload, { x: 5, y: 6, pointer: false });
+  assert.deepStrictEqual(hook.pushed[0].payload, { x: 5, y: 6, pointer: false, tool: null });
 
   // Joined: down the channel instead, and NOT also through the LiveView —
   // sending both would have every peer told twice.
@@ -505,7 +512,7 @@ const xOf = (c) => {
   frame();
   assert.strictEqual(sent.length, 1, "went down the channel");
   assert.strictEqual(sent[0].event, "cursor");
-  assert.deepStrictEqual(sent[0].payload, { x: 7, y: 8, pointer: false },
+  assert.deepStrictEqual(sent[0].payload, { x: 7, y: 8, pointer: false, tool: null },
     "the position sent is the latest, not the one that opened the frame");
   assert.strictEqual(hook.pushed.length, 1, "and not through the LiveView as well");
 
@@ -533,10 +540,97 @@ const xOf = (c) => {
   hook.flushMove();
   frame();
   assert.strictEqual(hook.pushed.length, 3, "a broken channel falls back too");
-  assert.deepStrictEqual(hook.pushed[2].payload, { x: 11, y: 12, pointer: false });
+  assert.deepStrictEqual(hook.pushed[2].payload, { x: 11, y: 12, pointer: false, tool: null });
 
   BoardLink.links = {};
   Date.now = realNow;
+}
+
+// ── what a peer is holding ──────────────────────────────────────────────────
+//
+// Five identical arrows say nothing about what anyone is doing. The tool
+// rides the cursor message and is drawn in that person's name tag, using
+// etcher's own glyph — the same one it puts on the local cursor — so nothing
+// here knows the set of tools.
+
+function makeTagHook(badges) {
+  const layer = makeLayer();
+  layer.toolBadge = (key) => badges[key] || null;
+  const hook = makeHook(layer);
+  hook._restore = () => {};
+  return hook;
+}
+
+const BADGES = { marker: "<path d='M1 1'/>", text: "<path d='M2 2'/>" };
+
+{
+  const hook = makeTagHook(BADGES);
+  hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "marker" });
+
+  const c = hook.cursors["p1"];
+  assert.strictEqual(c.tool, "marker", "remembered what they are holding");
+  assert.ok(c.el.innerHTML.includes(BADGES.marker), "and drew it");
+  assert.ok(c.el.innerHTML.includes("Ada"), "next to their name");
+  hook._restore();
+}
+
+// Picking up something else redraws the tag — but only then. This runs on
+// every packet, and rewriting the tag sixty times a second would be churn.
+{
+  const hook = makeTagHook(BADGES);
+  hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "marker" });
+  const c = hook.cursors["p1"];
+
+  let writes = 0;
+  const tag = c.el.querySelector();
+  Object.defineProperty(tag, "innerHTML", {
+    set(v) { writes++; this._v = v; },
+    get() { return this._v || ""; }
+  });
+
+  hook.update({ id: "p1", x: 1, y: 1, name: "Ada", color: "#f00", tool: "marker" });
+  hook.update({ id: "p1", x: 2, y: 2, name: "Ada", color: "#f00", tool: "marker" });
+  assert.strictEqual(writes, 0, "same tool, no redraw");
+
+  hook.update({ id: "p1", x: 3, y: 3, name: "Ada", color: "#f00", tool: "text" });
+  assert.strictEqual(writes, 1, "changed tool, one redraw");
+  assert.ok(tag.innerHTML.includes(BADGES.text));
+  assert.ok(tag.innerHTML.includes("Ada"), "the name survives the redraw");
+
+  // Putting the tool down leaves a plain named cursor rather than a stale
+  // glyph.
+  hook.update({ id: "p1", x: 4, y: 4, name: "Ada", color: "#f00" });
+  assert.strictEqual(writes, 2);
+  assert.ok(!tag.innerHTML.includes(BADGES.text), "glyph gone");
+  assert.ok(tag.innerHTML.includes("Ada"));
+  hook._restore();
+}
+
+// A tool etcher has no glyph for, and an etcher too old to have any, both
+// read as a plain named cursor rather than breaking the tag.
+{
+  const hook = makeTagHook(BADGES);
+  hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "nosuchtool" });
+  assert.ok(hook.cursors["p1"].el.innerHTML.includes("Ada"));
+  hook._restore();
+}
+{
+  const hook = makeHook(makeLayer()); // no toolBadge on the layer at all
+  hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00", tool: "marker" });
+  assert.deepStrictEqual(arrows(hook), ["p1"], "still drawn");
+}
+
+// A name is escaped whether or not a glyph is drawn beside it — the redraw
+// path builds the tag's markup by hand and must not become a way in.
+{
+  const hook = makeTagHook(BADGES);
+  hook.update({ id: "p1", x: 0, y: 0, name: "<img src=x onerror=alert(1)>", color: "#f00", tool: "marker" });
+  hook.update({ id: "p1", x: 1, y: 1, name: "<img src=x onerror=alert(1)>", color: "#f00", tool: "text" });
+
+  const html = hook.cursors["p1"].el.querySelector().innerHTML;
+  assert.ok(!html.includes("<img"), `unescaped name reached the tag: ${html}`);
+  assert.ok(html.includes("&lt;img"), "escaped instead");
+  hook._restore();
 }
 
 console.log("cursor pointer: all checks passed");

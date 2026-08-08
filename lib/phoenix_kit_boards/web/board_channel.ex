@@ -55,7 +55,12 @@ defmodule PhoenixKitBoards.Web.BoardChannel do
       "color" => peer.color,
       "x" => x,
       "y" => y,
-      "pointer" => params["pointer"] == true
+      "pointer" => params["pointer"] == true,
+      # What they are holding, so peers can draw it. Passed through as an
+      # opaque key — the drawing layer owns what the tools are and what each
+      # one looks like, and a key it doesn't recognise just reads as a plain
+      # cursor.
+      "tool" => tool_name(params["tool"])
     })
 
     {:noreply, socket}
@@ -91,6 +96,15 @@ defmodule PhoenixKitBoards.Web.BoardChannel do
        do: true
 
   defp movable?(_), do: false
+
+  # Arrives from a browser, so it can be anything. Bounded and constrained to
+  # the shape a tool key has — it is relayed to every peer and ends up in a
+  # DOM lookup, so an arbitrary string has no business travelling.
+  defp tool_name(tool) when is_binary(tool) do
+    if byte_size(tool) <= 32 and String.match?(tool, ~r/\A[a-z][a-z0-9_]*\z/), do: tool
+  end
+
+  defp tool_name(_), do: nil
 
   @doc false
   # Re-exported so a caller that has the channel does not also need the socket
