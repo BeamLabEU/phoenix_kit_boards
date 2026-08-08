@@ -7,14 +7,29 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
 (function () {
   // How often a moving cursor is sent.
-  const CURSOR_SEND_MS = 45;
+  //
+  // Interpolation makes any rate look smooth, but it draws a peer where they
+  // were one interval ago — so the interval is also the lag. At 45ms that was
+  // a visible fraction of a beat behind; 25 puts it under the threshold where
+  // it reads as following the other person rather than trailing them.
+  //
+  // A cursor is two floats and a flag, so the cost is the message rate rather
+  // than the bytes: 40 a second per moving user, each one a LiveView event, a
+  // broadcast, and a push to every peer. Fine for a room; if boards ever hold
+  // large groups this is the number to revisit, or move cursors onto a
+  // channel of their own so they skip the diff cycle.
+  const CURSOR_SEND_MS = 25;
 
   // What a peer's cursor glides over until enough packets have arrived to
   // measure the real interval, and the ceiling on that measurement. A glide
-  // longer than this is a peer who paused rather than a slow connection, and
-  // drifting slowly across the board for a quarter second after they stopped
-  // looks worse than arriving.
-  const CURSOR_GLIDE_MS = 90;
+  // longer than the ceiling is a peer who paused rather than a slow
+  // connection, and drifting slowly across the board for a quarter second
+  // after they stopped looks worse than arriving.
+  //
+  // The opening guess sits just above the send interval — close enough that
+  // the first moves of a session already look right, with a little room for
+  // the jitter the measurement then settles onto.
+  const CURSOR_GLIDE_MS = 40;
   const CURSOR_MAX_GLIDE_MS = 250;
 
   // A gap longer than this is a peer who stopped moving and started again,
