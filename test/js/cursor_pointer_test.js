@@ -33,20 +33,41 @@ for (const fn of ["escapeHtml", "escapeAttr"]) {
   global[fn] = eval("(" + m[0].trim().replace(`function ${fn}`, "function") + ")");
 }
 
-// Same reason: the hook reads the send/glide timings from the enclosing IIFE,
-// so they have to exist here. Read from the source rather than restated, or a
-// change to either would leave the test asserting against stale numbers.
-for (const name of ["CURSOR_SEND_MS", "CURSOR_GLIDE_MS"]) {
+// Same reason: the hook reads these timings from the enclosing IIFE, so they
+// have to exist here. Read from the source rather than restated, or a change
+// to any of them would leave the test asserting against stale numbers.
+for (const name of [
+  "CURSOR_SEND_MS", "CURSOR_GLIDE_MS", "CURSOR_MAX_GLIDE_MS", "CURSOR_STALE_GAP_MS"
+]) {
   const m = new RegExp(`const ${name} = (\\d+);`).exec(src);
   assert.ok(m, `could not find ${name}`);
   global[name] = Number(m[1]);
 }
 
-// A peer's cursor slides between the positions it is told about, and that
-// glide must not finish before the next one arrives — a cursor that reaches
-// its target and waits is the stutter this pins against.
+// A cursor glides between the positions it is told about, and that glide must
+// not finish before the next one arrives — a cursor that reaches its target
+// and waits is the stutter all of this exists to remove.
 assert.ok(global.CURSOR_GLIDE_MS >= global.CURSOR_SEND_MS,
   `a ${global.CURSOR_GLIDE_MS}ms glide between ${global.CURSOR_SEND_MS}ms updates leaves the cursor sitting still`);
+assert.ok(global.CURSOR_MAX_GLIDE_MS > global.CURSOR_GLIDE_MS,
+  "the ceiling has to leave room above the starting estimate");
+assert.ok(global.CURSOR_STALE_GAP_MS > global.CURSOR_MAX_GLIDE_MS,
+  "a gap counted as stale must be longer than the longest real glide");
+
+// The clock the interpolation runs on.
+let clock = 0;
+global.now_ = () => clock;
+
+// rAF is driven by hand so frames can be stepped through deliberately.
+let frames = [];
+global.requestAnimationFrame = (fn) => { frames.push(fn); return frames.length; };
+global.cancelAnimationFrame = () => {};
+const frame = (ms) => {
+  clock += ms === undefined ? 16 : ms;
+  const due = frames;
+  frames = [];
+  due.forEach((fn) => fn());
+};
 
 // The hook is a plain object literal inside an IIFE — take it by name and
 // evaluate it on its own, so a rename fails loudly instead of quietly
@@ -274,6 +295,127 @@ const arrows = (hook) => Object.keys(hook.cursors);
 
   Date.now = realNow;
   global.setTimeout = realSetTimeout;
+}
+
+// ── how a peer's cursor is drawn between packets ────────────────────────────
+//
+// Positions arrive ~20 times a second; the screen redraws 60. The gap is
+// filled by interpolating per frame, NOT by a CSS transition — a transition
+// restarts every time the transform is set, so an early or late packet
+// visibly changes the cursor's speed. That is the choppiness.
+
+const xOf = (c) => {
+  const m = /translate3d\((-?[\d.]+)px/.exec(c.el.style.transform || "");
+  return m ? Number(m[1]) : null;
+};
+
+{
+  const hook = makeHook(makeLayer());
+  clock = 0;
+  frames = [];
+
+  hook.update({ id: "p1", x: 0, y: 0, name: "Ada", color: "#f00" });
+  const c = hook.cursors["p1"];
+
+  // A second position 100 units away, one send-interval later.
+  clock += CURSOR_SEND_MS;
+  hook.update({ id: "p1", x: 100, y: 0, name: "Ada", color: "#f00" });
+
+  frame(0);
+  assert.strictEqual(xOf(c), 0, "starts where it was, not where it is going");
+
+  // Part-way through the glide it is part-way there — the whole point.
+  frame(c.span / 2);
+  const mid = xOf(c);
+  assert.ok(mid > 5 && mid < 95, `expected to be mid-flight, got ${mid}`);
+
+  // A later frame is further along than an earlier one.
+  frame(c.span / 4);
+  assert.ok(xOf(c) > mid, "keeps moving");
+
+  // And it arrives exactly, rather than stopping short or overshooting.
+  frame(c.span);
+  assert.strictEqual(xOf(c), 100, "arrives");
+
+  // Having arrived, it stays put.
+  frame(200);
+  assert.strictEqual(xOf(c), 100, "and stays");
+}
+
+// The glide is measured, not assumed. A peer whose packets arrive slowly must
+// glide slowly, or the cursor lands early and waits — the stutter again.
+{
+  const hook = makeHook(makeLayer());
+  clock = 0;
+  frames = [];
+
+  hook.update({ id: "p1", x: 0, y: 0, name: "A", color: "#f00" });
+  const c = hook.cursors["p1"];
+  const started = c.span;
+
+  // Ten packets, each 160ms apart — a slower connection than the send rate.
+  for (let i = 1; i <= 10; i++) {
+    clock += 160;
+    hook.update({ id: "p1", x: i, y: 0, name: "A", color: "#f00" });
+  }
+
+  assert.ok(c.span > started, `glide should have grown from ${started}, got ${c.span}`);
+  assert.ok(c.span <= CURSOR_MAX_GLIDE_MS, "but never past the ceiling");
+}
+
+// A pause is not a slow connection. Someone who stops for a second and starts
+// again must not leave the estimate believing every packet takes a second.
+{
+  const hook = makeHook(makeLayer());
+  clock = 0;
+  frames = [];
+
+  hook.update({ id: "p1", x: 0, y: 0, name: "A", color: "#f00" });
+  const c = hook.cursors["p1"];
+
+  for (let i = 1; i <= 5; i++) {
+    clock += CURSOR_SEND_MS;
+    hook.update({ id: "p1", x: i, y: 0, name: "A", color: "#f00" });
+  }
+  const settled = c.interval;
+
+  clock += CURSOR_STALE_GAP_MS * 3; // wandered off, came back
+  hook.update({ id: "p1", x: 99, y: 0, name: "A", color: "#f00" });
+
+  assert.strictEqual(c.interval, settled, "a pause left the estimate alone");
+}
+
+// The loop keeps running while anyone is on the board, so a peer standing
+// still stays on the spot they are pointing at while THIS viewer pans. If it
+// settled instead, their cursor would stick to the glass.
+{
+  const hook = makeHook(makeLayer());
+  clock = 0;
+  frames = [];
+
+  hook.update({ id: "p1", x: 10, y: 10, name: "A", color: "#f00" });
+  frame(1000);
+  assert.strictEqual(frames.length, 1, "still drawing after everyone settled");
+
+  // The viewer zooms: the same canvas point is now somewhere else on screen.
+  hook.handle.imageToScreen = (p) => ({ x: p.x * 3, y: p.y * 3 });
+  frame();
+  assert.strictEqual(xOf(hook.cursors["p1"]), 30, "followed the view");
+}
+
+// With nobody left, the loop stops rather than spinning forever.
+{
+  const hook = makeHook(makeLayer());
+  clock = 0;
+  frames = [];
+
+  hook.update({ id: "p1", x: 1, y: 1, name: "A", color: "#f00" });
+  frame();
+  assert.strictEqual(frames.length, 1);
+
+  hook.remove("p1");
+  frame();
+  assert.strictEqual(frames.length, 0, "no peers, no loop");
 }
 
 console.log("cursor pointer: all checks passed");

@@ -6,16 +6,29 @@
 window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
 (function () {
-  // How often a moving cursor is sent, and how long a peer takes to slide
-  // between the two positions it was told about.
-  //
-  // The glide has to be at least as long as the gap between packets or the
-  // cursor finishes early and waits, which is the stutter: move, stop, move,
-  // stop. Slightly longer bridges ordinary jitter, at the cost of running
-  // that far behind — small next to the trip through the server, and far
-  // less noticeable than the stutter it removes.
+  // How often a moving cursor is sent.
   const CURSOR_SEND_MS = 45;
+
+  // What a peer's cursor glides over until enough packets have arrived to
+  // measure the real interval, and the ceiling on that measurement. A glide
+  // longer than this is a peer who paused rather than a slow connection, and
+  // drifting slowly across the board for a quarter second after they stopped
+  // looks worse than arriving.
   const CURSOR_GLIDE_MS = 90;
+  const CURSOR_MAX_GLIDE_MS = 250;
+
+  // A gap longer than this is a peer who stopped moving and started again,
+  // not a slow packet — it says nothing about the connection, so it must not
+  // drag the interval estimate up with it.
+  const CURSOR_STALE_GAP_MS = 500;
+
+  // Monotonic where available: the interpolation asks how far through a glide
+  // it is, and a wall clock that steps (NTP, sleep/wake) would make a cursor
+  // jump or freeze.
+  const now_ =
+    typeof performance === "object" && typeof performance.now === "function"
+      ? () => performance.now()
+      : () => Date.now();
 
   // Do two objects carry the same set of keys? Null and an empty object are
   // the same thing here — a shape with no style and a shape whose style is
@@ -343,6 +356,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     destroyed() {
       if (this.sweeper) clearInterval(this.sweeper);
       if (this.moveTimer) clearTimeout(this.moveTimer);
+      if (this.raf) cancelAnimationFrame(this.raf);
+      this.raf = null;
       if (this.onMove) this.root().removeEventListener("pointermove", this.onMove);
     },
 
@@ -432,31 +447,126 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         this.dropPointer(p.id);
       }
 
-      let screen;
-      try {
-        screen = this.handle.imageToScreen({ x: p.x, y: p.y });
-      } catch (_) {
-        return;
-      }
-      const rect = this.el.getBoundingClientRect();
-      const x = screen.x - rect.left;
-      const y = screen.y - rect.top;
-
       let c = this.cursors[p.id];
       if (!c) {
-        c = { el: this.buildCursor(p.name, p.color), lastSeen: 0 };
+        c = {
+          el: this.buildCursor(p.name, p.color),
+          lastSeen: 0,
+          // Canvas coordinates throughout — converted to screen once per
+          // frame, so a peer's cursor stays on the spot it is pointing at
+          // while THIS viewer pans or zooms, rather than sticking to the
+          // glass until the next packet arrives.
+          at: { x: p.x, y: p.y },
+          from: { x: p.x, y: p.y },
+          to: { x: p.x, y: p.y },
+          startedAt: 0,
+          span: CURSOR_GLIDE_MS,
+          interval: CURSOR_GLIDE_MS,
+          lastPacket: 0
+        };
         this.el.appendChild(c.el);
         this.cursors[p.id] = c;
       }
+
+      const now = now_();
+
+      // Glide over however long the packets are ACTUALLY taking, measured
+      // rather than assumed. Sending is throttled to a fixed interval, but
+      // arrivals are not: the network, the server and the browser's timers
+      // all add jitter. Interpolating over a fixed guess means the cursor
+      // finishes early and waits, or is still moving when it is overtaken —
+      // either way the speed keeps changing, which is what reads as choppy.
+      //
+      // Smoothed, so one late packet nudges the estimate instead of
+      // redefining it, and floored at the send interval so a burst can't
+      // collapse the glide to nothing.
+      if (c.lastPacket) {
+        const gap = now - c.lastPacket;
+        if (gap > 0 && gap < CURSOR_STALE_GAP_MS) {
+          c.interval = c.interval * 0.7 + gap * 0.3;
+        }
+      }
+      c.lastPacket = now;
+
+      c.from = { x: c.at.x, y: c.at.y };
+      c.to = { x: p.x, y: p.y };
+      c.startedAt = now;
+      c.span = Math.max(CURSOR_SEND_MS, Math.min(c.interval, CURSOR_MAX_GLIDE_MS));
       c.lastSeen = Date.now();
-      c.el.style.transform = `translate(${x}px, ${y}px)`;
+
+      this.startDrawing();
+    },
+
+    // One rAF loop for every cursor on the board.
+    //
+    // The alternative — a CSS transition per packet — cannot be smooth: the
+    // browser restarts the transition each time the transform is set, so an
+    // early or late packet visibly changes the cursor's speed. Interpolating
+    // per frame decouples what is drawn from when packets happen to land.
+    startDrawing() {
+      if (this.raf) return;
+      const step = () => {
+        this.raf = null;
+        if (this.draw()) this.startDrawing();
+      };
+      this.raf = requestAnimationFrame(step);
+    },
+
+    // Returns whether the loop should keep running.
+    //
+    // It runs for as long as anyone else is on the board, rather than only
+    // while a glide is in flight: a peer standing still is still somewhere on
+    // the canvas, and THIS viewer panning or zooming moves where that is on
+    // screen. Settling the loop instead would leave their cursor stuck to the
+    // glass until they happened to move again.
+    //
+    // The cost of that is a few transform writes per frame, and the write is
+    // skipped when the value hasn't changed — so a still board with a still
+    // peer does no DOM work at all.
+    draw() {
+      const ids = Object.keys(this.cursors);
+      if (!ids.length || !this.handle) return false;
+
+      const rect = this.el.getBoundingClientRect();
+      const now = now_();
+
+      ids.forEach((id) => {
+        const c = this.cursors[id];
+        const t = c.span > 0 ? Math.min(1, (now - c.startedAt) / c.span) : 1;
+
+        c.at = {
+          x: c.from.x + (c.to.x - c.from.x) * t,
+          y: c.from.y + (c.to.y - c.from.y) * t
+        };
+
+        let screen;
+        try {
+          screen = this.handle.imageToScreen(c.at);
+        } catch (_) {
+          return;
+        }
+
+        // translate3d rather than translate: it keeps the cursor on its own
+        // compositor layer, so moving it doesn't repaint what is under it.
+        const transform =
+          `translate3d(${screen.x - rect.left}px, ${screen.y - rect.top}px, 0)`;
+        if (c.drawn !== transform) {
+          c.el.style.transform = transform;
+          c.drawn = transform;
+        }
+      });
+
+      return true;
     },
 
     buildCursor(name, color) {
       const wrap = document.createElement("div");
       wrap.style.cssText =
-        "position:absolute;top:0;left:0;pointer-events:none;will-change:transform;" +
-        `transition:transform ${CURSOR_GLIDE_MS}ms linear;z-index:40;`;
+        // Deliberately no CSS transition. The position is interpolated per
+        // frame instead — a transition restarts every time the transform is
+        // set, so an early or late packet visibly changes the cursor's speed,
+        // and the two mechanisms would fight for the same property.
+        "position:absolute;top:0;left:0;pointer-events:none;will-change:transform;z-index:40;";
       wrap.innerHTML =
         `<svg width="18" height="18" viewBox="0 0 24 24" fill="${escapeAttr(color)}" ` +
         `style="filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))"><path d="M4 2 L20 12 L13 13 L11 20 Z"/></svg>` +
