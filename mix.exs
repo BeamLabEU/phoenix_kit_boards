@@ -76,14 +76,24 @@ defmodule PhoenixKitBoards.MixProject do
       # their JS + hooks (the media annotation feature), so these constraints
       # exist to agree with PhoenixKit core rather than to pull anything new.
       #
-      # fresco matches core exactly. etcher is deliberately tighter than
-      # core's `~> 0.9`: the collab hook calls `setImageUploader` and
-      # `setLinkUnfurler`, which arrived in 0.10.0, and core's constraint
-      # would resolve to 0.9.0 and leave both features silently degraded.
-      # Narrower is still compatible — a two-part `~>` runs to the next
-      # major, so core admits everything this asks for.
-      pk_dep(:fresco, "~> 0.10"),
-      pk_dep(:etcher, "~> 0.10"),
+      # Both are deliberately tighter than core's, because this module calls
+      # things core never does and an older release would degrade rather than
+      # fail — which is the worst shape for a missing dependency to take.
+      # Narrower is still compatible: a two-part `~>` runs to the next major,
+      # so core admits everything this asks for.
+      #
+      # fresco 0.11: `setGridVisible` (the background-dots preference), and
+      # the exemption that stops the canvas cancelling `dragstart` over an
+      # overlay — without it the toolbar's customise dialog cannot be dragged.
+      #
+      # etcher 0.11: `onShapesMoving` / `applyShapesMoving`, which is how a
+      # peer's drag is visible while it happens rather than only once they let
+      # go, and `toolBadge`, which is how a cursor shows what its owner is
+      # holding. All three are called through `typeof` guards, so an older
+      # etcher loses live drags and tool cursors silently — hence pinning
+      # rather than relying on the guard.
+      pk_dep(:fresco, "~> 0.11"),
+      pk_dep(:etcher, "~> 0.11"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). open_fresco emits SVG by itself and

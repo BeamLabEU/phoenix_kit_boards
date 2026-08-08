@@ -4,6 +4,119 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Audio and video on a board, played together.** Drop or paste an audio or
+  video file and it becomes a player (etcher 0.11). Whoever presses play, pauses, or
+  scrubs drives it for everyone in the room — a teacher and their students
+  hear the same moment of a recording.
+
+  Anyone may control it: commands are relayed verbatim over the board's
+  existing PubSub topic and the last one to arrive wins. There is no
+  ownership check and no conflict resolution, because for a shared listening
+  session there is nothing to resolve — the useful behaviour is that the
+  transport does what the last person to touch it said.
+
+  Uploads accept audio and video alongside images, with the size cap raised to
+  256MB (a screen recording runs to hundreds of MB where a pasted screenshot
+  is under one). This is the LiveView upload channel, which chunks — not the
+  socket's frame limit. Past this the answer isn't a bigger number but an
+  external uploader, so bytes go straight to storage instead of through the
+  server; worth doing when someone actually hits it.
+
+  Upload progress reaches the placeholder Etcher draws on drop. The LiveView
+  has pushed `board:image-progress` all along and the hook only used it to
+  keep a watchdog alive; it now also feeds Etcher's bar, so a large file
+  shows how far along it is rather than only that it started.
+
+  The accept list is filtered at runtime against what the host's `mime`
+  config can actually resolve. `allow_upload` raises on a filter it can't
+  map — and on a default install `.m4a`, `.ogg`, `.m4v` and `audio/mp4` are
+  all unmappable — which took the whole board page down at mount instead of
+  degrading. Every format is named both by extension and by MIME type, so
+  dropping one form leaves the other.
+
+  A peer joining **while something is already playing** is caught up: on join
+  the room is asked to announce where it is, and the answer is relayed.
+  Clients already in step ignore it, since it lands inside etcher's drift
+  tolerance, so this costs one round trip per join.
+
+- **Watch someone move a shape while they are moving it.** Shapes are emitted
+  for persistence when a gesture *ends*, so a peer saw nothing for the length
+  of a drag and then the shape somewhere new. In-flight positions travel too
+  now, and peers patch them into place as they arrive.
+
+  Nothing about them is stored: the edit itself still lands the usual way on
+  release, and an abandoned drag snaps back rather than leaving everyone at a
+  position nobody recorded.
+
+- **A cursor shows who is holding what.** A peer's pointer is drawn as the
+  cursor they actually have in hand — etcher's own per-tool mark, in that
+  person's colour — rather than as one of several identical arrows with a name
+  beside it. Someone holding nothing keeps the arrow.
+
+- **Cursors and in-flight drags have a channel of their own.** Both are
+  high-rate and worthless a moment later, and through a LiveView every
+  position paid for a render and a diff, queued behind that process's real
+  work — saving edits, uploads, link previews.
+
+  Optional, because sockets are declared on the endpoint and that belongs to
+  the host. One line enables it:
+
+  ```elixir
+  socket "/phoenix_kit/board", PhoenixKitBoards.Web.BoardSocket, websocket: true
+  ```
+
+  A host that skips it loses nothing that worked before: cursors fall back to
+  the LiveView relay, and live drags simply don't appear. The client also
+  falls back while the channel is joining, or if it fails, so a socket that
+  dies mid-session degrades rather than dropping cursors silently.
+
+  Joining is governed by a signed token naming the board and the peer, minted
+  by the LiveView that rendered the page. The channel re-derives both from it,
+  so a client cannot join a board it was never shown, or present as somebody
+  else.
+
+### Fixed
+
+- **The whole board was sent on every edit.** `Fresco.canvas` writes the
+  annotations into `data-extensions`, and the template rendered the canvas
+  assign — which every edit changes. So each edit re-encoded and diffed the
+  entire board and pushed the result down the socket, from either end. On a
+  board carrying a few images that is megabytes, per edit.
+
+  All of it was discarded on arrival, since `#board-root` is
+  `phx-update="ignore"`. The cost was not: the encode blocked the LiveView
+  while cursor messages queued behind it, which is what made remote cursors
+  choppy and about a second late, and a frame that size is enough to drop the
+  socket and remount the peer. The canvas is rendered once at mount now and
+  skipped forever after.
+
+- **An image pasted before uploads worked was re-sent forever.** An image
+  whose upload fails is embedded in the shape as a base64 data URL so the
+  paste survives, and the client re-sends every shape on every edit — so one
+  screenshot went up the socket again each time anyone nudged a marker. Those
+  bytes are moved into storage the first time they arrive and the shape
+  rewritten to point at the stored file, once per image, at open as well as on
+  edit. A real board went from 5.36 MB per edit to 22.9 KB.
+
+- **Watching a peer edit flashed the whole board.** Every changed shape was
+  deleted and re-added, which rebuilds the element — media reloads, images
+  re-decode — and because re-adding appends, the layering was then re-imposed
+  across every shape on the board. Changed shapes are patched in place now,
+  and the order re-imposed only when it can actually have moved.
+
+- **A peer's cursor stuttered.** Its position was handed to a CSS transition,
+  and a transition restarts every time the transform is set, so an early or
+  late packet visibly changed the cursor's speed. Positions feed an
+  animation-frame loop now, interpolating over the interval they are
+  measurably arriving at, which decouples what is drawn from when packets
+  land. Cursors are also held in canvas coordinates and converted per frame,
+  so a peer standing still stays on the spot they are pointing at while you
+  pan or zoom.
+
 ## [0.2.0] — 2026-08-04
 
 First release to reach Hex — 0.1.0 was tagged in the changelog but never
