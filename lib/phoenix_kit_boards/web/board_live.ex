@@ -509,7 +509,14 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # no conflict resolution: the command is relayed verbatim and the last one
   # to arrive wins. The sender has already applied it locally — this only
   # carries it to everyone else.
-  def handle_event("etcher:media-command", %{"uuid" => uuid, "action" => action} = params, socket) do
+  #
+  # Both fields are relayed verbatim to every peer, so both are checked for
+  # being strings at all — the same reason `cursor_tool/1` exists. Not narrowed
+  # further: the transport vocabulary is etcher's, and a whitelist here would
+  # silently drop a command a later release adds. A malformed one falls to the
+  # `"etcher:" <> _` clause below and is ignored.
+  def handle_event("etcher:media-command", %{"uuid" => uuid, "action" => action} = params, socket)
+      when is_binary(uuid) and is_binary(action) do
     position = normalize_position(params["position"])
     broadcast(socket.assigns.topic, {:board_media, uuid, action, position, self()})
     {:noreply, socket}

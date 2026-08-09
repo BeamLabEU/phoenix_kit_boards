@@ -19,8 +19,10 @@ defmodule PhoenixKitBoards.Web.BoardSocket do
   Sockets are declared on the endpoint, which belongs to the host, so this
   needs one line in `endpoint.ex`:
 
-      socket "/phoenix_kit/board", PhoenixKitBoards.Web.BoardSocket,
-        websocket: [connect_info: [:peer_data]]
+      socket "/phoenix_kit/board", PhoenixKitBoards.Web.BoardSocket, websocket: true
+
+  Nothing more: `connect/3` takes the peer from the signed token and reads no
+  `connect_info`, so there is none to declare.
 
   It is optional. A host that hasn't added it loses nothing that worked
   before: the client notices the socket isn't there and falls back to

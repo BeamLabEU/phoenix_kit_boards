@@ -57,7 +57,7 @@ the module).
 
 ## Requirements
 
-- `phoenix_kit ~> 1.7`, `fresco ~> 0.10`, `etcher ~> 0.10` (all resolved by the
+- `phoenix_kit ~> 1.7`, `fresco ~> 0.11`, `etcher ~> 0.11` (all resolved by the
   host — this module references their components and reuses their loaded JS).
 - **PhoenixKit's Storage module, with at least one bucket enabled**, if you
   want pasted images to be uploaded rather than embedded. Without it every
@@ -86,6 +86,33 @@ the module).
 
   So this is headroom for the fallback path, not the mechanism boards rely on.
   It raises the ceiling; it does not remove it.
+
+## Optional: the ephemeral socket
+
+Cursors and in-flight drags are high-rate and worthless a moment later, and
+through a LiveView every position pays for a render and a diff — queued behind
+that process's real work: saving edits, uploads, link previews. They can go
+over a channel of their own instead. Sockets are declared on the endpoint, and
+that belongs to the host, so this is one line in `endpoint.ex`:
+
+```elixir
+socket "/phoenix_kit/board", PhoenixKitBoards.Web.BoardSocket, websocket: true
+```
+
+Skipping it loses nothing that worked before: cursors fall back to the LiveView
+relay, which is where they used to go, and live drags simply don't appear. The
+client also falls back while the channel is joining and if it fails, so a
+socket that dies mid-session degrades rather than dropping cursors silently.
+
+Joining is governed by a short-lived signed token naming the board and the
+peer, minted by the LiveView that rendered the page. The channel re-derives
+both from it, so a client cannot join a board it was never shown, or present as
+somebody else. Mounted somewhere other than the default path? Say so, and the
+client is told rather than left to guess:
+
+```elixir
+config :phoenix_kit_boards, board_socket_path: "/somewhere/else"
+```
 
 ## License
 

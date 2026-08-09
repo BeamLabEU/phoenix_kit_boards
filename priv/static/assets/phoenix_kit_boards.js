@@ -253,6 +253,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         p.reject("board closed before the upload finished");
       });
       this.pendingUploads = [];
+      // The link outlives the DOM otherwise — see `BoardCursors.destroyed`.
+      BoardLink.close(this.frescoId);
     },
 
     // Open the ephemeral channel and start streaming drags over it.
@@ -447,10 +449,17 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // layering had to be re-imposed afterwards — and that re-imposition
       // touched every shape on the board, so watching a peer drag one thing
       // flashed all of it.
+      // A shape patching cannot express is rebuilt instead — and a rebuild
+      // appends, so it moves. Remembered rather than inferred from the delta:
+      // the server has no way to know which of its updates this particular
+      // viewer was able to patch, and that is exactly what decides it.
+      let rebuilt = false;
+
       updated.forEach((shape) => {
         if (!this.patchInPlace(layer, shape)) {
           layer.deleteShape(shape.uuid);
           layer.addShape(shape);
+          rebuilt = true;
         }
       });
 
@@ -460,10 +469,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       //
       // Position in the list is z-order. Patching leaves a shape where it
       // already sits, so an ordinary edit no longer disturbs it — only adding,
-      // removing, or a real reorder can, and the server says which.
+      // removing, rebuilding one, or a real reorder can.
       // `setShapeOrder` deliberately doesn't emit, so applying a peer's delta
       // can't echo back as a change of our own.
-      const structural = created.length > 0 || deleted.length > 0 || delta.reordered;
+      const structural = created.length > 0 || deleted.length > 0 || rebuilt || delta.reordered;
       if (structural && delta.order && typeof layer.setShapeOrder === "function") {
         layer.setShapeOrder(delta.order);
       }
@@ -542,6 +551,21 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       this.sendFrame = null;
       this.raf = null;
       if (this.onMove) this.root().removeEventListener("pointermove", this.onMove);
+
+      // Close the channel, and refuse anything that arrives before it does.
+      //
+      // Nothing else does: the socket is opened here but lives on `BoardLink`,
+      // which outlives the page. Navigating back to the board list left it
+      // connected and still joined, and the "cursor" handler still holds THIS
+      // hook — so every packet from a peer appended a cursor to an element no
+      // longer in the document and restarted `startDrawing`, an rAF loop with
+      // nothing left to cancel it. One per board opened, for the life of the
+      // tab.
+      //
+      // `draw` and `update` both bail on a missing handle, so dropping it is
+      // what makes a packet racing the close harmless.
+      this.handle = null;
+      BoardLink.close(this.frescoId);
     },
 
     // The interactive board container (board-cursors is pointer-events:none).

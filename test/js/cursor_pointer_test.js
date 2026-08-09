@@ -664,4 +664,44 @@ const ARROW = "M4 2 L20 12 L13 13 L11 20 Z";
   hook._restore();
 }
 
+// ── leaving the board ───────────────────────────────────────────────────────
+//
+// The socket is opened here but lives on `BoardLink`, which outlives the page.
+// Nothing else closes it, so walking back to the board list left it connected
+// and still joined — with the "cursor" handler holding a hook whose element is
+// no longer in the document. Every packet from a peer then appended a cursor
+// to nothing and restarted the draw loop, which by then had nothing left to
+// cancel it: one endless rAF loop per board opened, for the life of the tab.
+
+{
+  const hook = makeHook(makeLayer());
+  const closed = [];
+  BoardLink.links["board-canvas"] = {
+    joined: true,
+    topic: "board:x",
+    handlers: {},
+    channel: { push: () => {}, leave: () => closed.push("channel") },
+    socket: { disconnect: () => closed.push("socket") }
+  };
+  BoardLink.on("board-canvas", "cursor", (p) => hook.update(p));
+
+  hook.update({ id: "p1", x: 1, y: 1, name: "Ada", color: "#f00" });
+  assert.deepStrictEqual(arrows(hook), ["p1"]);
+
+  frames = [];
+  hook.destroyed();
+
+  assert.deepStrictEqual(closed, ["channel", "socket"], "the channel goes with the page");
+  assert.strictEqual(BoardLink.links["board-canvas"], undefined, "and is forgotten");
+
+  // A packet that raced the close must land nowhere rather than start the
+  // loop again.
+  const drawn = hook.el.children.length;
+  hook.update({ id: "p2", x: 2, y: 2, name: "Bob", color: "#00f" });
+  assert.strictEqual(hook.el.children.length, drawn, "nothing drawn after teardown");
+  assert.strictEqual(frames.length, 0, "and no frame asked for");
+
+  BoardLink.links = {};
+}
+
 console.log("cursor pointer: all checks passed");

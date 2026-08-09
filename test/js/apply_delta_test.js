@@ -138,12 +138,53 @@ const rect = (uuid, x) => ({
   assert.ok(layer.shapes.has("ghost"));
 }
 
-// An etcher without `patchShape` must still apply edits, just the old way.
+// An etcher without `patchShape` must still apply edits, just the old way —
+// which means the old way's order pass as well.
 {
   const layer = makeLayer([rect("a", 0)], { noPatch: true });
   hookFor(layer).apply({ updated: [rect("a", 25)], order: ["a"] });
-  assert.deepStrictEqual(kinds(layer), ["delete", "add"]);
+  assert.deepStrictEqual(kinds(layer), ["delete", "add", "order"]);
   assert.deepStrictEqual(layer.shapes.get("a").geometry.x, 25, "and the edit still lands");
+}
+
+// ── a rebuild moves the shape, so the order has to follow it ────────────────
+//
+// Re-adding APPENDS: whatever was rebuilt lands on top of everything else.
+// That is the case `setShapeOrder` exists for, and gating it on the delta
+// alone missed it — the server has no way to know which of its updates a
+// given viewer was able to patch, and that is exactly what decides whether
+// anything moved. So the answer comes from what happened here, not from what
+// was sent.
+{
+  const layer = makeLayer([rect("a", 0), rect("b", 5)], { noPatch: true });
+  hookFor(layer).apply({ updated: [rect("a", 25)], order: ["a", "b"], reordered: false });
+
+  assert.deepStrictEqual(kinds(layer), ["delete", "add", "order"],
+    "a rebuilt shape needs the layering put back");
+  assert.deepStrictEqual(layer.calls[2][1], ["a", "b"], "to the sender's order");
+}
+
+// Same when patching exists but declines — a removed style key is a rebuild
+// like any other, and it moves the shape just the same.
+{
+  const layer = makeLayer([
+    { uuid: "a", kind: "rect", geometry: {}, style: { color: "#f00", fill: "solid" } },
+    rect("b", 5)
+  ]);
+  hookFor(layer).apply({
+    updated: [{ uuid: "a", kind: "rect", geometry: {}, style: { color: "#f00" } }],
+    order: ["a", "b"],
+    reordered: false
+  });
+  assert.deepStrictEqual(kinds(layer), ["delete", "add", "order"]);
+}
+
+// But a patch still disturbs nothing, even alongside one that had to rebuild:
+// the order pass is the price of the rebuild, not of every edit.
+{
+  const layer = makeLayer([rect("a", 0), rect("b", 5)]);
+  hookFor(layer).apply({ updated: [rect("a", 25), rect("b", 30)], order: ["a", "b"] });
+  assert.deepStrictEqual(kinds(layer), ["patch", "patch"], "nothing rebuilt, nothing reordered");
 }
 
 // ── nothing to apply to ─────────────────────────────────────────────────────

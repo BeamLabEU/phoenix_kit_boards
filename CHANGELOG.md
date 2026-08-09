@@ -4,7 +4,7 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] — 2026-08-08
 
 ### Added
 
@@ -134,6 +134,41 @@ project adheres to [Semantic Versioning](https://semver.org/).
   land. Cursors are also held in canvas coordinates and converted per frame,
   so a peer standing still stays on the spot they are pointing at while you
   pan or zoom.
+
+- **A shape the viewer could not patch jumped to the front and stayed there.**
+  Layering is only re-imposed when it can have moved, and an update was assumed
+  not to move anything. But an update patching cannot express — a peer removed
+  a style or metadata key, the shape changed kind, or this viewer's etcher has
+  no `patchShape` at all — falls back to deleting and re-adding it, and
+  re-adding appends. On an older etcher that is *every* peer edit, quietly
+  reshuffling the board one shape at a time for that viewer alone, with nothing
+  to correct it until someone added or removed something. The decision now
+  comes from what actually happened on this client, which is the only place it
+  can: the server cannot know which of its updates a given viewer managed to
+  patch.
+
+- **Leaving a board left its socket open and a draw loop running.** The
+  ephemeral channel lives on a map that outlives the page and nothing closed
+  it, so walking back to the board list kept the connection joined with a
+  cursor handler still holding the torn-down hook. Every packet from a peer
+  still on that board then drew into an element no longer in the document and
+  restarted the animation-frame loop, which by then had nothing left to cancel
+  it — one per board opened, for the life of the tab. Both hooks close the link
+  on teardown now, and a packet that races the close lands nowhere.
+
+- **The media transport relayed two unchecked fields.** `uuid` and `action`
+  arrive from a browser and go straight to every peer; every other value on
+  that path is constrained, and these were not. Non-string commands are now
+  ignored rather than passed on. Not narrowed further than that on purpose —
+  the vocabulary is etcher's, and a whitelist here would silently drop a
+  command a later release adds.
+
+- **The optional socket was undocumented where a host would look.** The one
+  endpoint line that enables it appeared only in this changelog and the
+  module's own docs, which disagreed on what it should say — so on an ordinary
+  install the channel silently never engaged and cursors quietly used the
+  fallback the feature exists to replace. It is in the README now, together
+  with the `board_socket_path` override.
 
 ## [0.2.0] — 2026-08-04
 
