@@ -198,6 +198,34 @@ const settle = () => new Promise((r) => setImmediate(r));
     assert.deepStrictEqual(log, ["BoardSync.mounted"], "and it still forwards");
   }
 
+  // ── the request is answered by something that isn't the bundle ────────────
+
+  // An auth redirect resolving to a login page, a proxy error page, a CSP
+  // that blocked it: the script "loads" and defines nothing. That is the
+  // silent single-player state this whole mechanism exists to remove, so it
+  // has to say so — once, not per callback.
+  {
+    const win = browser();
+    const errors = [];
+    win.console = { error: (msg) => errors.push(msg) };
+    install(win);
+
+    const shim = win["phx_hook_BoardSync"]();
+    shim.mounted.call(shim);
+    win.injected[0].onload();  // resolves, but nothing was defined
+    await settle();
+
+    assert.strictEqual(errors.length, 1, "said so");
+    assert.ok(/defined no hooks/.test(errors[0]), `unhelpful message: ${errors[0]}`);
+
+    // Not once per callback, and not once per hook.
+    shim.updated.call(shim);
+    const other = win["phx_hook_BoardCursors"]();
+    other.mounted.call(other);
+    await settle();
+    assert.strictEqual(errors.length, 1, "and only once");
+  }
+
   // ── a bundle without the hook in it ───────────────────────────────────────
 
   {

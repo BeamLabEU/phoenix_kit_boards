@@ -100,7 +100,26 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
 
       function forward(ctx, callback) {
         load().then(function () {
-          var hook = (window.PhoenixKitBoardsHooks || {})[NAME];
+          // A script that loads without defining anything is the failure this
+          // whole mechanism exists to remove — the board renders, local edits
+          // save, and only collaboration is missing, which reads as a broken
+          // feature rather than a missing file. It happens if the request is
+          // answered by something other than the bundle: an auth redirect
+          // resolving to a login page, a proxy error page, a CSP that blocked
+          // it. Say so once rather than leaving it to be discovered.
+          if (!window.PhoenixKitBoardsHooks) {
+            if (!window.__phoenixKitBoardsWarned) {
+              window.__phoenixKitBoardsWarned = true;
+              console.error(
+                "[phoenix_kit_boards] " + SRC + " loaded but defined no hooks — " +
+                  "this board will not be collaborative. Check that the URL returns " +
+                  "the hook bundle rather than a redirect or an error page."
+              );
+            }
+            return;
+          }
+
+          var hook = window.PhoenixKitBoardsHooks[NAME];
           if (!hook || typeof hook[callback] !== "function") return;
 
           // The element can be gone before the bundle lands. Running `mounted`
