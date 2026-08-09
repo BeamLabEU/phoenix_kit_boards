@@ -4,7 +4,7 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] — 2026-08-08
+## [Unreleased]
 
 ### Added
 
@@ -17,6 +17,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   LiveView checks the host's own registration first, so it keeps using that
   and there is never a second copy. A host enforcing a Content-Security-Policy
   can pass a nonce.
+
+### Fixed
+
+- **Collaboration silently did nothing on some hosts.** The hooks were
+  delivered only through `js_sources/0`, which only core's
+  `:phoenix_kit_js_sources` compiler consumes. A host that bundles dependency
+  JS its own way got no hooks and no error anywhere — the board rendered, the
+  canvas worked, local edits saved, and only peers' edits and cursors never
+  arrived, so it read as "collaboration is broken" rather than "the JS never
+  loaded". See the runtime-hook delivery above.
+
+## [0.3.0] — 2026-08-08
+
+### Added
 
 - **Audio and video on a board, played together.** Drop or paste an audio or
   video file and it becomes a player (etcher 0.11). Whoever presses play, pauses, or
@@ -90,14 +104,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   else.
 
 ### Fixed
-
-- **Collaboration silently did nothing on some hosts.** The hooks were
-  delivered only through `js_sources/0`, which only core's
-  `:phoenix_kit_js_sources` compiler consumes. A host that bundles dependency
-  JS its own way got no hooks and no error anywhere — the board rendered, the
-  canvas worked, local edits saved, and only peers' edits and cursors never
-  arrived, so it read as "collaboration is broken" rather than "the JS never
-  loaded". See the runtime-hook delivery above.
 
 - **The whole board was sent on every edit.** `Fresco.canvas` writes the
   annotations into `data-extensions`, and the template rendered the canvas
