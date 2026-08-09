@@ -8,6 +8,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Collaboration works on any host, with no JS setup.** The board page now
+  delivers its own hooks as LiveView runtime hooks, and serves the bundle from
+  a route this module owns. Adding the dependency is the whole installation —
+  no `compilers:` entry, no vendor `<script>` tag, no `app.js` import.
+
+  Hosts running core's `:phoenix_kit_js_sources` compiler are unaffected:
+  LiveView checks the host's own registration first, so it keeps using that
+  and there is never a second copy. A host enforcing a Content-Security-Policy
+  can pass a nonce.
+
 - **Audio and video on a board, played together.** Drop or paste an audio or
   video file and it becomes a player (etcher 0.11). Whoever presses play, pauses, or
   scrubs drives it for everyone in the room — a teacher and their students
@@ -80,6 +90,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   else.
 
 ### Fixed
+
+- **Collaboration silently did nothing on some hosts.** The hooks were
+  delivered only through `js_sources/0`, which only core's
+  `:phoenix_kit_js_sources` compiler consumes. A host that bundles dependency
+  JS its own way got no hooks and no error anywhere — the board rendered, the
+  canvas worked, local edits saved, and only peers' edits and cursors never
+  arrived, so it read as "collaboration is broken" rather than "the JS never
+  loaded". See the runtime-hook delivery above.
 
 - **The whole board was sent on every edit.** `Fresco.canvas` writes the
   annotations into `data-extensions`, and the template rendered the canvas
