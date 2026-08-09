@@ -14,8 +14,17 @@ defmodule PhoenixKitBoards do
   - **Zero JS setup.** PhoenixKit core already loads `fresco.js` + `etcher.js`
     and their hooks (the media annotation feature), so `<Fresco.canvas>` +
     `<Etcher.layer>` work in this module's pages out of the box. This module's
-    own collaboration hook ships via `js_sources/0`, which core's
-    `:phoenix_kit_js_sources` compiler folds into the host LiveSocket.
+    own collaboration hooks are delivered by the board page itself, as
+    LiveView runtime hooks — see `PhoenixKitBoards.Web.RuntimeHooks`. Nothing
+    is asked of the host beyond depending on this module: no compiler entry,
+    no script tag, no `app.js` import.
+
+    `js_sources/0` is still declared, so a host running core's
+    `:phoenix_kit_js_sources` compiler keeps getting the bundle that way and
+    LiveView prefers it. It is no longer load-bearing — which it silently
+    was. A host that bundles dependency JS its own way got no hooks and no
+    error: the board rendered and local edits saved, so the failure looked
+    like "collaboration is broken" rather than "the JS never loaded".
   - **Collaboration** rides the etcher document: each edit re-emits the full
     annotation list (`etcher:annotations-changed`); the LiveView persists it,
     broadcasts over PubSub, and peers apply the delta — no canvas remount.
@@ -112,6 +121,11 @@ defmodule PhoenixKitBoards do
   compiler concatenates this into the host's `phoenix_kit_modules.js` (loaded
   before app.js) and folds `window.PhoenixKitBoardsHooks` into
   `window.PhoenixKitHooks`.
+
+  A fast path, not a requirement. Hosts that don't run that compiler get the
+  same hooks from `PhoenixKitBoards.Web.RuntimeHooks`, which the board page
+  emits itself; LiveView checks the host's own registration first, so where
+  both exist this one wins and there is never a second copy.
   """
   def js_sources do
     [

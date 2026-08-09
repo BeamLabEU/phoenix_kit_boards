@@ -24,6 +24,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.Users.Auth
   alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
   alias PhoenixKitBoards.Web.BoardSocket
+  alias PhoenixKitBoards.Web.RuntimeHooks
 
   # Pasted / dropped images go to storage; the shape keeps a URL.
   #
@@ -897,6 +898,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           </span>
         </div>
       </header>
+
+      <%!-- Delivers BoardSync + BoardCursors without the host wiring anything.
+            Before the elements that use them: LiveView re-creates a runtime-hook
+            script as the patch adds it, and a hook is resolved when its element
+            mounts, which is after. --%>
+      <RuntimeHooks.scripts nonce={assigns[:script_csp_nonce]} />
 
       <%!-- phx-update="ignore": the canvas is hook-managed; LiveView must not
             re-render it. Collaboration flows through pushed events. --%>

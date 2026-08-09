@@ -44,9 +44,11 @@ the module).
 
 - PhoenixKit core already ships and loads `fresco.js` + `etcher.js` (the media
   annotation feature), so `<Fresco.canvas>` + `<Etcher.layer>` work here with
-  **no host JS setup**. This module's collaboration hook is delivered via
-  `js_sources/0`, which core's `:phoenix_kit_js_sources` compiler folds into
-  the host LiveSocket.
+  **no host JS setup**. This module's collaboration hooks are delivered by the
+  board page itself, as LiveView runtime hooks, so they work whatever the host
+  does about JS — no compiler entry, no script tag, no `app.js` import.
+  `js_sources/0` is still declared as a fast path for hosts running core's
+  `:phoenix_kit_js_sources` compiler, and LiveView prefers it where it exists.
 - Editing re-emits the full etcher annotation list (`etcher:annotations-changed`);
   the LiveView diffs, persists, and broadcasts over PubSub; peers apply the
   delta. Echo is broken server-side (an unchanged list diffs to empty).
