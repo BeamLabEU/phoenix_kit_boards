@@ -19,6 +19,52 @@ defmodule PhoenixKitBoards.AssetControllerTest do
     |> AssetController.call(:js)
   end
 
+  describe "through a browser pipeline" do
+    # The access pattern the shim actually uses, and the one that was never
+    # tested: a plain `<script src>` GET — no `x-requested-with` — arriving
+    # through `protect_from_forgery`.
+    #
+    # `Plug.CSRFProtection` refuses any GET that returns a JavaScript
+    # content-type, is not an XHR, and hasn't opted out. All three held, so
+    # every load of the bundle was a 403 and the board was never collaborative
+    # — the exact symptom the runtime-hook delivery was written to fix. It
+    # fires in `before_send`, so a valid session made no difference and it
+    # never presented as an authorization problem.
+    #
+    # Driven through the real plug rather than by asserting the private flag,
+    # because the flag is the mechanism and the 403 is the bug.
+    @session Plug.Session.init(
+               store: :cookie,
+               key: "_boards_test",
+               signing_salt: "test-salt",
+               encryption_salt: "test-salt"
+             )
+
+    defp through_csrf(headers \\ []) do
+      Enum.reduce(headers, conn(:get, "/admin/boards/assets/hooks.js", %{}), fn {k, v}, conn ->
+        put_req_header(conn, k, v)
+      end)
+      |> Map.put(:secret_key_base, String.duplicate("abcdefgh", 8))
+      |> Plug.Session.call(@session)
+      |> Plug.Conn.fetch_session()
+      |> Plug.CSRFProtection.call(Plug.CSRFProtection.init([]))
+      |> AssetController.call(:js)
+    end
+
+    test "a plain script-tag GET is served, not refused" do
+      conn = through_csrf()
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "PhoenixKitBoardsHooks"
+    end
+
+    test "an XHR is served too" do
+      # This one always worked, which is why the bug hid: every convenient way
+      # to check the route by hand passes.
+      assert through_csrf([{"x-requested-with", "XMLHttpRequest"}]).status == 200
+    end
+  end
+
   test "serves the bundle" do
     conn = get()
 
