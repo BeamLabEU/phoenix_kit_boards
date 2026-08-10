@@ -4,7 +4,17 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-10
+
+### Changed
+
+- **⚠️ Requires `phoenix_kit ~> 2.0`.** The core pin moved to `~> 2.0`, so this
+  release no longer resolves against core 1.7. Core 2.0.0 squashes the
+  migration chain into a single `V135` baseline and *refuses* to migrate a
+  database below it — check `mix phoenix_kit.status` **before** upgrading. A
+  host below V135 must install `phoenix_kit 1.7.236` (the migration bridge),
+  migrate to at least V135, and only then move to 2.0. This package does not
+  call migration internals, so the change is the pin itself.
 
 ### Added
 

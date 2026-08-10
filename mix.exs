@@ -1,7 +1,7 @@
 defmodule PhoenixKitBoards.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_boards"
 
   def project do
@@ -69,7 +69,7 @@ defmodule PhoenixKitBoards.MixProject do
       # the consumer's build, not a degraded feature. (`PhoenixKit.Module`
       # needs 1.7.46, `PubSubHelper` 1.7.28, `Dashboard.Tab` 1.7.21 — all
       # covered by the same floor.)
-      pk_dep(:phoenix_kit, "~> 1.7.189"),
+      pk_dep(:phoenix_kit, "~> 2.0"),
       {:phoenix_live_view, "~> 1.1"},
 
       # The infinite-canvas engine + annotation layer. The host already loads

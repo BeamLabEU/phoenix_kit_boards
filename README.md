@@ -12,7 +12,7 @@ in real time. Each board is one row in `phoenix_kit_boards`.
 
 ```elixir
 # host app mix.exs
-{:phoenix_kit_boards, "~> 0.1"}
+{:phoenix_kit_boards, "~> 0.4"}
 ```
 
 ```bash
