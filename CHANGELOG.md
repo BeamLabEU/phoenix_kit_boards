@@ -4,6 +4,13 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.2 - 2026-08-11
+
+### Changed
+
+- Dependency updates: `phoenix_kit` 2.2.0 and the transitive set it pulls
+  (`phoenix` 1.8.10, `hackney` 4.7.3). No source changes in this package.
+
 ## [0.4.1] - 2026-08-11
 
 ### Fixed
