@@ -238,6 +238,21 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       });
 
       this.armEditing();
+
+      // Tell the server this hook can hear it — and only now.
+      //
+      // Anything the LiveView pushes from its connected mount rides the join
+      // reply and is dispatched immediately. Under this module's runtime-hook
+      // delivery that is hundreds of milliseconds before THIS function runs:
+      // the shim's `mounted` starts a ~40 KB fetch, and the handlers
+      // registered above do not exist until it lands. Every mount-time push
+      // went to nobody — the channel token and the stored preferences among
+      // them, which is a board that renders and saves but never shows a
+      // cursor.
+      //
+      // So the server waits to be asked. Both hooks ask, because either may
+      // mount last and the reply has to arrive when both are listening.
+      this.pushEvent("board:ready", {});
     },
 
     destroyed() {
@@ -541,6 +556,11 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         }
       });
       this.sweeper = setInterval(() => this.sweep(), 4000);
+
+      // Same reason as BoardSync — see the note there. The cursor channel's
+      // token arrives on `board:channel`, and this hook's handler for it is
+      // registered just above.
+      this.pushEvent("board:ready", {});
     },
 
     destroyed() {
