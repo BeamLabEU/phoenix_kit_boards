@@ -78,6 +78,13 @@ function mount(hook) {
   try { BoardSync.mounted.call(hook); } catch (_) {}
 }
 
+// `mounted` pushes `board:ready` to announce the hook — see the handshake
+// suite. Everything here is about the PREFS channel, so it is isolated once
+// rather than in every assertion.
+function prefs_pushes(hook) {
+  return (hook.pushed || []).filter((p) => p.name === "etcher:prefs-changed");
+}
+
 // ── changes go to the server ────────────────────────────────────────────────
 
 {
@@ -88,7 +95,7 @@ function mount(hook) {
   const prefs = { panel: "compact", grid: false, tools: ["line"] };
   hook.listeners["etcher:prefs-changed"]({ detail: prefs });
 
-  const sent = hook.pushed.filter((p) => p.name === "etcher:prefs-changed");
+  const sent = prefs_pushes(hook);
   assert.strictEqual(sent.length, 1);
   // The WHOLE set, not a diff — the server stores it verbatim and the last
   // one to arrive is the answer, so there is nothing to reconcile.
@@ -101,7 +108,7 @@ function mount(hook) {
   const hook = makeHook(makeLayer());
   mount(hook);
   hook.listeners["etcher:prefs-changed"]({});
-  assert.deepStrictEqual(hook.pushed[0].payload, {});
+  assert.deepStrictEqual(prefs_pushes(hook)[0].payload, {});
 }
 
 // ── stored preferences come back ────────────────────────────────────────────
@@ -115,7 +122,10 @@ function mount(hook) {
   assert.deepStrictEqual(layer.received, [{ panel: "hidden" }]);
   // Handing them back must NOT look like a change, or every page load would
   // write them straight back to the server.
-  assert.deepStrictEqual(hook.pushed, []);
+  //
+  // Filtered rather than "nothing was pushed": `mounted` also announces the
+  // hook with `board:ready`, which is what makes the prefs arrive at all.
+  assert.deepStrictEqual(prefs_pushes(hook), []);
 }
 
 // Nothing stored is the common case — a user who has never changed anything.

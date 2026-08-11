@@ -153,7 +153,6 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          |> assign(:tools, @tools)
          |> assign(:topic, topic)
          |> assign(:me, me)
-         |> assign(:peers, %{})
          |> allow_upload(:board_image,
            accept: upload_accept(),
            max_entries: 1,
@@ -161,18 +160,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
            auto_upload: true,
            progress: &handle_image_progress/3
          )
-         |> push_event("board:prefs", %{prefs: load_prefs(socket)})
-         # Lets the client open the ephemeral channel — cursors and in-flight
-         # drags. It falls back to relaying them through here if the host
-         # hasn't mounted the socket, so this is an offer rather than a
-         # requirement.
-         |> push_event("board:channel", %{
-           token: BoardSocket.sign(socket, board.uuid, me),
-           topic: "board:#{board.uuid}",
-           # Where the host mounted the socket. It picks the path, so it has
-           # to be the one to say — the client cannot guess it.
-           path: BoardSocket.mount_path()
-         })}
+         # Deliberately nothing pushed here. See `handle_event("board:ready")`.
+         |> assign(:peers, %{})}
     end
   end
 
@@ -441,6 +430,52 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # ── Local edits (client → server) ─────────────────────────────────────────
 
   @impl true
+  # The client says when it can hear us, and only then is anything pushed.
+  #
+  # A `push_event` in the connected mount rides the join reply and is
+  # dispatched the instant it lands. That was fine while hooks were registered
+  # on the host's LiveSocket at construction time — `mounted` had already run.
+  # Under this module's own runtime-hook delivery it is a race that is always
+  # lost: the shim's `mounted` starts a ~40 KB fetch and the REAL
+  # `BoardSync.mounted` — where `handleEvent("board:channel")` is registered —
+  # runs hundreds of milliseconds later. The events dispatch to nobody and are
+  # gone.
+  #
+  # The visible result was a board that rendered, edited and saved, while live
+  # cursors, in-flight drags and stored preferences never appeared — because
+  # the channel token and the prefs both arrived before anything was listening.
+  # A host log showed 12 successful bundle fetches and zero BoardSocket
+  # connections.
+  #
+  # So the hooks announce themselves and this answers. Correct under both
+  # delivery models — a host-registered hook simply sends the ping a few
+  # milliseconds earlier — and any push added here later inherits the same
+  # guarantee. The extra round trip is dwarfed by the fetch it replaces
+  # racing.
+  #
+  # Answered on EVERY ping rather than once. Both hooks ping, and whichever
+  # mounts last triggers a push that both are registered for by then; the
+  # handlers are idempotent (`BoardLink.ensure` reuses a live connection,
+  # `setPrefs` re-applies the same set), so the duplicate costs nothing and
+  # removes any need to reason about which hook won the race.
+  def handle_event("board:ready", _params, socket) do
+    board = socket.assigns.board
+
+    {:noreply,
+     socket
+     |> push_event("board:prefs", %{prefs: load_prefs(socket)})
+     # Lets the client open the ephemeral channel — cursors and in-flight
+     # drags. It falls back to relaying them through here if the host hasn't
+     # mounted the socket, so this is an offer rather than a requirement.
+     |> push_event("board:channel", %{
+       token: BoardSocket.sign(socket, board.uuid, socket.assigns.me),
+       topic: "board:#{board.uuid}",
+       # Where the host mounted the socket. It picks the path, so it has to be
+       # the one to say — the client cannot guess it.
+       path: BoardSocket.mount_path()
+     })}
+  end
+
   def handle_event("etcher:annotations-changed", %{"annotations" => incoming}, socket)
       when is_list(incoming) do
     if empty_delta?(diff(socket.assigns.annotations, incoming)) do
