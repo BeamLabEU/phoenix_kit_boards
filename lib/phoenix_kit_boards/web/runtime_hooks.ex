@@ -91,6 +91,15 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
             // into a tab that stays non-collaborative until it is reloaded,
             // and navigating between boards would never retry.
             window.__phoenixKitBoardsLoad = null;
+            // Drop the dead node. Retrying appends a fresh one each time, and
+            // a `<head>` collecting failed script tags is the sort of thing
+            // that makes the next person doubt they are reading the right one.
+            if (el.parentNode) el.parentNode.removeChild(el);
+            // `forward` warns "loaded but defined no hooks" whenever the
+            // bundle is missing after the promise settles. Here it did not
+            // load at all, so that message would contradict this one. Claim
+            // the once-per-page warning so only the accurate error is printed.
+            window.__phoenixKitBoardsWarned = true;
             explain(SRC);
             resolve();
           };
@@ -119,17 +128,30 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
 
         fetch(src, { credentials: "same-origin" })
           .then(function (response) {
-            console.error(
-              base + " (HTTP " + response.status + ")" +
-                (response.status === 403
-                  ? " — a 403 here is usually CSRF's cross-origin-script guard;" +
-                    " the route must skip forgery protection"
-                  : "")
-            );
+            console.error(base + " (HTTP " + response.status + ")" + hint(response));
           })
           .catch(function () {
             console.error(base);
           });
+      }
+
+      function hint(response) {
+        if (response.status === 403) {
+          return " — a 403 here is usually CSRF's cross-origin-script guard;" +
+            " the route must skip forgery protection";
+        }
+
+        // The refetch worked, so the URL is fine and the response is the
+        // bundle — something stopped the browser from EXECUTING it, and a bare
+        // "(HTTP 200)" on a line saying it could not load reads as a
+        // contradiction rather than as the clue it is.
+        if (response.ok) {
+          return " — the response itself is fine, so the script was blocked" +
+            " client-side; check the page's Content-Security-Policy (a" +
+            " script-src nonce is passed to <.scripts nonce={...} />)";
+        }
+
+        return "";
       }
 
       function forward(ctx, callback) {

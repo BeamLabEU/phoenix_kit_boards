@@ -99,7 +99,13 @@ defmodule PhoenixKitBoards.RuntimeHooksTest do
     test "is absent unless the host supplies one" do
       # An empty `nonce=""` is worse than none: under a CSP it matches nothing
       # and the script is blocked.
-      refute render(%{nonce: nil}) =~ "nonce="
+      #
+      # Scoped to the opening tags rather than the whole render: the body is
+      # 4 KB of JavaScript that is free to mention the word, and matching
+      # against all of it fails on a comment.
+      for tag <- Regex.scan(~r/<script[^>]*>/, render(%{nonce: nil})) do
+        refute hd(tag) =~ "nonce="
+      end
     end
 
     test "is carried through when it is" do

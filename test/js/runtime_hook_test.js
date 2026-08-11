@@ -39,23 +39,44 @@ assert.strictEqual(bodies.length, 2, `expected two hook scripts, got ${bodies.le
 // ── a stand-in for the browser ──────────────────────────────────────────────
 
 function browser() {
+  // `injected` is every script ever appended, kept append-only so a test can
+  // index it by attempt number. `head.children` is what is actually in the
+  // document right now, which is a different question once the shim starts
+  // removing the ones that failed.
   const injected = [];
   const win = {};
 
-  win.document = {
-    head: { appendChild: (el) => injected.push(el) },
-    createElement: () => ({})
+  const head = {
+    children: [],
+    appendChild: (el) => {
+      el.parentNode = head;
+      head.children.push(el);
+      injected.push(el);
+    },
+    removeChild: (el) => {
+      const at = head.children.indexOf(el);
+      if (at >= 0) head.children.splice(at, 1);
+      el.parentNode = null;
+    }
   };
 
+  win.document = { head, createElement: () => ({}) };
   win.console = { error: () => {} };
   win.injected = injected;
+  // Absent by default. The shim degrades to a plain message when `fetch` is
+  // missing, and leaving it undefined keeps every other case off the network
+  // — Node has a real `fetch` global that the emitted script would otherwise
+  // reach straight past this stand-in and use.
+  win.fetch = undefined;
   return win;
 }
 
 // Evaluate the emitted shim against that stand-in, the way the browser would.
+// `fetch` is passed explicitly for the same reason as the rest: whatever the
+// shim reaches for has to come from the stand-in, not from Node.
 function install(win) {
-  const fn = new Function("window", "document", "console", bodies.join("\n"));
-  fn(win, win.document, win.console);
+  const fn = new Function("window", "document", "console", "fetch", bodies.join("\n"));
+  fn(win, win.document, win.console, win.fetch);
 }
 
 // The real hook, as the bundle would define it.
@@ -195,6 +216,11 @@ const settle = () => new Promise((r) => setImmediate(r));
     win.injected[0].onerror();
     await settle();
 
+    // The dead node goes with it. Retrying appends a fresh script each time,
+    // so keeping the failures would leave a `<head>` full of tags for a file
+    // that never arrived.
+    assert.strictEqual(win.document.head.children.length, 0, "dead script removed");
+
     // A later mount asks again rather than reusing the failure.
     const second = win["phx_hook_BoardSync"]();
     second.mounted.call(second);
@@ -206,6 +232,79 @@ const settle = () => new Promise((r) => setImmediate(r));
     await settle();
 
     assert.deepStrictEqual(log, ["BoardSync.mounted"], "and recovers");
+    assert.strictEqual(win.document.head.children.length, 1, "the one that worked stayed");
+  }
+
+  // ── what a failure says ───────────────────────────────────────────────────
+
+  // A script element's error event carries no status, so the shim refetches to
+  // find out. The status is the whole diagnostic value — a 403 from CSRF's
+  // cross-origin-script guard is obvious the moment the number is on screen
+  // and baffling until then.
+  {
+    const win = browser();
+    const errors = [];
+    win.console = { error: (msg) => errors.push(msg) };
+    win.fetch = () => Promise.resolve({ status: 403, ok: false });
+    install(win);
+
+    const shim = win["phx_hook_BoardSync"]();
+    shim.mounted.call(shim);
+    win.injected[0].onerror();
+    await settle();
+    await settle();
+
+    assert.strictEqual(errors.length, 1, `one message, got: ${errors.join(" | ")}`);
+    assert.ok(/HTTP 403/.test(errors[0]), `no status: ${errors[0]}`);
+    assert.ok(/forgery protection/.test(errors[0]), `no cause named: ${errors[0]}`);
+
+    // And specifically NOT the "loaded but defined no hooks" line: the bundle
+    // did not load at all, so that message contradicts this one. `forward`
+    // reaches that branch on every failure — it is only silent because the
+    // error path claims the once-per-page warning.
+    shim.updated.call(shim);
+    await settle();
+    assert.strictEqual(errors.length, 1, `contradicted itself: ${errors.join(" | ")}`);
+  }
+
+  // ── a failure the status cannot explain ───────────────────────────────────
+
+  // The refetch succeeding means the URL and the response are both fine and
+  // something stopped the browser executing the script — a CSP, usually. A
+  // bare "(HTTP 200)" on a line that says it could not load reads as a
+  // contradiction rather than as the clue it is.
+  {
+    const win = browser();
+    const errors = [];
+    win.console = { error: (msg) => errors.push(msg) };
+    win.fetch = () => Promise.resolve({ status: 200, ok: true });
+    install(win);
+
+    const shim = win["phx_hook_BoardSync"]();
+    shim.mounted.call(shim);
+    win.injected[0].onerror();
+    await settle();
+    await settle();
+
+    assert.ok(/HTTP 200/.test(errors[0]), `no status: ${errors[0]}`);
+    assert.ok(/Content-Security-Policy/.test(errors[0]), `no cause named: ${errors[0]}`);
+  }
+
+  // ── no fetch to refetch with ──────────────────────────────────────────────
+
+  {
+    const win = browser();
+    const errors = [];
+    win.console = { error: (msg) => errors.push(msg) };
+    install(win);  // `win.fetch` is undefined
+
+    const shim = win["phx_hook_BoardSync"]();
+    shim.mounted.call(shim);
+    win.injected[0].onerror();
+    await settle();
+
+    assert.strictEqual(errors.length, 1, "still says something");
+    assert.ok(/could not load/.test(errors[0]), `unhelpful message: ${errors[0]}`);
   }
 
   // ── an already-loaded bundle ──────────────────────────────────────────────

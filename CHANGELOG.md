@@ -4,6 +4,35 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-08-11
+
+### Fixed
+
+- **The hook bundle was refused with a 403 on every load, so boards were never
+  collaborative** (#5). 0.4.0 moved hook delivery onto a route this module
+  serves, and `Plug.CSRFProtection` refuses any GET that returns a JavaScript
+  content-type, is not an XHR, and has not opted out — all three held, because
+  the shim loads the bundle with `document.createElement("script")`. The guard
+  runs in `before_send`, so a signed-in admin with a perfectly good session got
+  the same 403 and it never presented as an authorization problem. The route
+  now sets `plug_skip_csrf_protection`, which is safe here: the bundle is read
+  at compile time and is byte-identical for every visitor, carrying no user,
+  session or board data.
+
+- **A failed bundle load was memoized**, so one bad response left the tab
+  non-collaborative until someone reloaded it, and navigating between boards
+  never retried. The failure is now forgotten, and the dead `<script>` node is
+  removed rather than left in `<head>`.
+
+### Changed
+
+- **A failed load now says why.** A script element's error event carries no
+  status, so the shim refetches and reports it — naming CSRF's
+  cross-origin-script guard on a 403, and the page's Content-Security-Policy
+  when the refetch succeeds (the response was fine; something blocked execution).
+  It also no longer contradicts itself: the "loaded but defined no hooks"
+  message is suppressed on a path where nothing loaded at all.
+
 ## [0.4.0] - 2026-08-10
 
 ### Changed
