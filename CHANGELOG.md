@@ -4,6 +4,32 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.3 - 2026-08-11
+
+### Fixed
+
+- **Live cursors, in-flight drags and stored preferences never arrived** (#6),
+  the third release running whose symptom was "collaboration is broken". 0.4.1
+  fixed bundle *delivery*; this fixes what delivering late does to the join
+  handshake.
+
+  Anything `push_event`-ed from the connected `mount` rides the join reply and
+  is dispatched the moment it lands. That was safe while hooks were registered
+  on the host's LiveSocket at construction time — `mounted` had already run.
+  Under runtime-hook delivery it is a race that is *always* lost: the shim's
+  `mounted` starts a ~40 KB fetch, and the real `BoardSync.mounted`, where
+  `handleEvent("board:channel")` is registered, runs hundreds of milliseconds
+  later. Both of this board's mount-time pushes are load-bearing — the
+  ephemeral channel's token and the user's preferences — so the board rendered,
+  edited and saved while the collaborative half silently never started. A host
+  log showed 12 successful bundle fetches and zero `BoardSocket` connections.
+
+  Both hooks now push `board:ready` as the last thing their `mounted` does, and
+  the LiveView answers with the prefs and the channel offer; `mount_connected`
+  pushes nothing. Correct under both delivery models — a host-registered hook
+  simply pings a few milliseconds earlier — and any push added later inherits
+  the guarantee instead of quietly reintroducing the race.
+
 ## 0.4.2 - 2026-08-11
 
 ### Changed
