@@ -86,16 +86,50 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
           // rather than leaving callbacks pending for the life of the page.
           el.onload = resolve;
           el.onerror = function () {
-            console.error(
-              "[phoenix_kit_boards] could not load " + SRC +
-                "; this board will not be collaborative"
-            );
+            // Forget the failure so a later mount can try again. Memoizing it
+            // would turn one bad response — a blip, a restart mid-deploy —
+            // into a tab that stays non-collaborative until it is reloaded,
+            // and navigating between boards would never retry.
+            window.__phoenixKitBoardsLoad = null;
+            explain(SRC);
             resolve();
           };
           document.head.appendChild(el);
         });
 
         return window.__phoenixKitBoardsLoad;
+      }
+
+      // Say WHY, not just that it failed.
+      //
+      // A script element's error event carries no status, so the message alone
+      // could not distinguish a 404 from a 403 from a login page — and a 403
+      // from CSRF's cross-origin-script guard is exactly the sort of thing
+      // that is obvious the moment you see the number and baffling until you
+      // do. Refetching costs one request on a path that has already failed.
+      function explain(src) {
+        var base =
+          "[phoenix_kit_boards] could not load " + src +
+          "; this board will not be collaborative";
+
+        if (typeof fetch !== "function") {
+          console.error(base);
+          return;
+        }
+
+        fetch(src, { credentials: "same-origin" })
+          .then(function (response) {
+            console.error(
+              base + " (HTTP " + response.status + ")" +
+                (response.status === 403
+                  ? " — a 403 here is usually CSRF's cross-origin-script guard;" +
+                    " the route must skip forgery protection"
+                  : "")
+            );
+          })
+          .catch(function () {
+            console.error(base);
+          });
       }
 
       function forward(ctx, callback) {

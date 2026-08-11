@@ -49,7 +49,27 @@ defmodule PhoenixKitBoards.Web.AssetController do
   def digest, do: @digest
 
   def js(conn, _params) do
-    conn = put_resp_header(conn, "etag", @etag)
+    conn =
+      conn
+      # Without this the response is a 403, and only ever a 403.
+      #
+      # `Plug.CSRFProtection` refuses any GET that returns a JavaScript
+      # content-type, is not an XHR, and hasn't opted out — its guard against a
+      # third-party page `<script>`-including an endpoint whose body varies per
+      # user and reading what comes back. The board page loads this with
+      # `document.createElement("script")`, which sends no `x-requested-with`,
+      # so all three held and every load failed. It fires in `before_send`, so
+      # a signed-in admin with a perfectly good session got the same 403 — this
+      # never looked like an authorization problem.
+      #
+      # Opting out is right for THIS response rather than convenient: the
+      # bundle is read at compile time and is byte-identical for every visitor,
+      # carrying no user, session or board data. A cross-origin include has
+      # nothing to learn from it. This is a static asset that happens to be
+      # served by a controller, and this restores the semantics it would have
+      # had under `Plug.Static`.
+      |> put_private(:plug_skip_csrf_protection, true)
+      |> put_resp_header("etag", @etag)
 
     if stale?(conn) do
       conn

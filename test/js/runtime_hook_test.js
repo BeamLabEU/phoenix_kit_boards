@@ -179,6 +179,35 @@ const settle = () => new Promise((r) => setImmediate(r));
     assert.deepStrictEqual(log, ["BoardSync.updated"], "callbacks settle rather than hang");
   }
 
+  // ── a failure is not permanent ────────────────────────────────────────────
+
+  // Memoizing a failed load would turn one bad response — a blip, a restart
+  // mid-deploy, a route that was misconfigured until a moment ago — into a tab
+  // that stays non-collaborative until someone reloads it, and navigating
+  // between boards would never retry.
+  {
+    const win = browser();
+    install(win);
+
+    const first = win["phx_hook_BoardSync"]();
+    first.mounted.call(first);
+    assert.strictEqual(win.injected.length, 1);
+    win.injected[0].onerror();
+    await settle();
+
+    // A later mount asks again rather than reusing the failure.
+    const second = win["phx_hook_BoardSync"]();
+    second.mounted.call(second);
+    assert.strictEqual(win.injected.length, 2, "retried on the next mount");
+
+    const log = [];
+    win.PhoenixKitBoardsHooks = realHooks(log);
+    win.injected[1].onload();
+    await settle();
+
+    assert.deepStrictEqual(log, ["BoardSync.mounted"], "and recovers");
+  }
+
   // ── an already-loaded bundle ──────────────────────────────────────────────
 
   // A host that DOES run the compiler has the hooks in its LiveSocket, which
