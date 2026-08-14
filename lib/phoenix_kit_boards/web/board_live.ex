@@ -204,8 +204,14 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # which is what lets the client pair a reply with its request by order.
   defp handle_image_progress(:board_image, entry, socket) do
     if entry.done? do
-      result = consume_uploaded_entry(socket, entry, &{:ok, store_image(&1.path, entry, socket)})
-      {:noreply, reply_to_upload(socket, result)}
+      # Tell the client the bytes arrived, then return. `push_event` only
+      # flushes when this callback returns, and `store_image/3` is one
+      # blocking hash + bucket write — a video at the 256 MB cap is many
+      # seconds of silence. The hook's watchdog is 15 s of silence, so
+      # doing the write here made it give up and embed the file, which is
+      # the failure this whole path exists to prevent.
+      send(self(), {:store_board_image, entry.ref})
+      {:noreply, push_event(socket, "board:image-progress", %{"progress" => 100})}
     else
       # Nothing is drawn from this — Etcher places the shape immediately and
       # uploads behind it, so there is no bar to fill. It is the client's
@@ -257,7 +263,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp store(path, user_uuid, checksum, entry) do
     path
     |> Storage.store_file_in_buckets(
-      Storage.determine_file_type(entry.client_type, entry.client_name),
+      file_type_for(entry),
       user_uuid,
       checksum,
       ext_for(entry),
@@ -284,12 +290,47 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  defp file_checksum(path) do
-    case File.read(path) do
-      {:ok, data} -> {:ok, :md5 |> :crypto.hash(data) |> Base.encode16(case: :lower)}
+  # Core's media browser hashes with SHA256 (`Auth.calculate_file_hash/1`).
+  # `store_file_in_buckets/6` dedupes on `user_uuid + file_checksum`, so an
+  # MD5 here meant the same bytes pasted onto a board and later uploaded
+  # through the media page minted two rows. Streamed: `@image_accept`
+  # invites video up to 256 MB, and `File.read/1` would hold all of it.
+  @doc false
+  def file_checksum(path) do
+    case File.open(path, [:read, :raw, :binary], &sha256_io/1) do
+      {:ok, digest} -> {:ok, digest}
       {:error, reason} -> {:error, reason}
     end
+  rescue
+    e in File.Error -> {:error, e.reason}
   end
+
+  defp sha256_io(io) do
+    io
+    |> hash_io(:crypto.hash_init(:sha256))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp hash_io(io, acc) do
+    case IO.binread(io, 65_536) do
+      :eof ->
+        :crypto.hash_final(acc)
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "read", path: ""
+
+      data when is_binary(data) ->
+        hash_io(io, :crypto.hash_update(acc, data))
+    end
+  end
+
+  # Public so the classifier can be tested without a LiveView or a bucket —
+  # hardcoding `"image"` again would be silent, and the suite has no database.
+  @doc false
+  def file_type_for(%{client_type: type, client_name: name}),
+    do: Storage.determine_file_type(type, name)
+
+  def file_type_for(_), do: Storage.determine_file_type(nil, nil)
 
   # ── Embedded images → storage ─────────────────────────────────────────────
   #
@@ -749,7 +790,31 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     handle_info({:board_cursor, id, x, y, %{pointer: false, tool: nil}, from}, socket)
   end
 
+  # Follow-up from `handle_image_progress/3`: the bytes are on disk, the
+  # client has been told (progress 100), now write them. See that clause
+  # for why this is not done in the progress callback itself.
+  def handle_info({:store_board_image, ref}, socket) do
+    {:noreply, consume_done_upload(socket, ref)}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp consume_done_upload(socket, ref) do
+    entry =
+      socket.assigns.uploads.board_image.entries
+      |> Enum.find(&(&1.ref == ref and &1.done?))
+
+    case entry do
+      nil ->
+        socket
+
+      entry ->
+        result =
+          consume_uploaded_entry(socket, entry, &{:ok, store_image(&1.path, entry, socket)})
+
+        reply_to_upload(socket, result)
+    end
+  end
 
   @impl true
   def terminate(_reason, socket) do

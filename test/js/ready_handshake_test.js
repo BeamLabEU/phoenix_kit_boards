@@ -43,6 +43,8 @@ global.CURSOR_GLIDE_MS = 24;
 global.CURSOR_MIN_GLIDE_MS = 16;
 global.CURSOR_MAX_GLIDE_MS = 250;
 global.CURSOR_STALE_GAP_MS = 500;
+global.UPLOAD_SILENCE_MS = 15000;
+global.UPLOAD_STORING_MS = 5 * 60 * 1000;
 global.escapeHtml = (s) => s;
 global.escapeAttr = (s) => s;
 global.BoardLink = { ensure: () => null, get: () => null, on: () => {}, push: () => false, close: () => {} };

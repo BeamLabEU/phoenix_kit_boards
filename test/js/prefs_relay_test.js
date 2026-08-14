@@ -34,6 +34,9 @@ const BoardSync = eval(
 
 // ── stand-ins ───────────────────────────────────────────────────────────────
 
+global.UPLOAD_SILENCE_MS = 15000;
+global.UPLOAD_STORING_MS = 5 * 60 * 1000;
+
 let clockQueue = [];
 global.setTimeout = (fn) => { clockQueue.push(fn); return clockQueue.length; };
 global.clearTimeout = () => {};

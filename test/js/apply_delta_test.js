@@ -34,6 +34,9 @@ const start = src.indexOf("  const BoardSync = {");
 assert.notStrictEqual(start, -1, "could not find BoardSync");
 const end = src.indexOf("\n  };", start);
 assert.notStrictEqual(end, -1, "could not find the end of BoardSync");
+global.UPLOAD_SILENCE_MS = 15000;
+global.UPLOAD_STORING_MS = 5 * 60 * 1000;
+
 const BoardSync = eval(
   "(" + src.slice(start + "  const BoardSync = ".length, end + "\n  }".length) + ")"
 );

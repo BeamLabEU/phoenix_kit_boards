@@ -41,24 +41,22 @@ mix quality.ci              # format --check-formatted + credo --strict + dialyz
 This is a **library** (not a standalone Phoenix app) — no `config/`, endpoint,
 or router of its own.
 
-- `phoenix_kit` (`~> 1.7`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
+- `phoenix_kit` (`~> 2.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
-- `fresco` (`~> 0.10`) — the infinite-canvas engine and `Fresco.Canvas` document
-- `etcher` (`~> 0.10`) — the annotation/drawing layer over the canvas
+- `fresco` (`~> 0.11`) — the infinite-canvas engine and `Fresco.Canvas` document
+- `etcher` (`~> 0.11`) — the annotation/drawing layer over the canvas (lock is 0.12; the constraint already admits it)
 - `req` (`~> 0.5`) — fetches the page behind a pasted link
 - `floki` (`>= 0.34.0`) — reads its OpenGraph tags
 - `open_fresco` (`~> 0.2`) — lays the preview card out and emits it as SVG
 - `lazy_html` (test only)
 
-`fresco` matches PhoenixKit core exactly so the host's resolution is never in
-conflict — core already depends on both for its media annotation feature.
-`etcher` is deliberately tighter than core's `~> 0.9`: `setImageUploader` and
-`setLinkUnfurler` arrived in 0.10.0, and core's constraint would happily
-resolve 0.9.0 and leave both features silently degraded. Narrower is still
-compatible — a two-part `~>` runs to the next major, so core admits everything
-this asks for. **Core loading the JS is also why this module needs no host JS
-setup:** `fresco.js` and `etcher.js` are already there, so `<Fresco.canvas>`
-and `<Etcher.layer>` work out of the box.
+`fresco` / `etcher` are deliberately tighter than core's pins, because this
+module calls things core never does and an older release would degrade rather
+than fail — `setImageUploader` / `setLinkUnfurler` (0.10), `onShapesMoving` /
+`toolBadge` (0.11). Narrower is still compatible — a two-part `~>` runs to the
+next major, so core admits everything this asks for. **Core loading the JS is
+also why this module needs no host JS setup:** `fresco.js` and `etcher.js` are
+already there, so `<Fresco.canvas>` and `<Etcher.layer>` work out of the box.
 
 `open_fresco` can rasterise to PNG through an optional `:resvg` NIF or a CLI
 on PATH, but this module never asks it to — cards are emitted as SVG and the
@@ -139,7 +137,12 @@ All real-time traffic for a board rides one PubSub topic:
 | `{:board_join, peer, from}` | A newcomer arrived |
 | `{:board_hello, peer, from}` | Reply to a join, so the newcomer learns about existing viewers |
 | `{:board_leave, peer_id}` | A viewer disconnected (sent from `terminate/2`) |
-| `{:board_cursor, id, x, y, from}` | A pointer moved, in **canvas** coordinates |
+| `{:board_cursor, id, x, y, meta, from}` | A pointer moved, in **canvas** coordinates |
+| `{:board_media, uuid, action, position, from}` | Shared playback (play/pause/seek) |
+
+Cursors and in-flight drags also have an optional ephemeral channel
+(`BoardSocket` / `BoardChannel`) so they do not queue behind LiveView work.
+The LiveView path is the fallback when the host has not mounted the socket.
 
 **Echo suppression is server-side**, via `when from == self()` guards on each
 `handle_info/2` clause. Editing re-emits the *entire* annotation list
@@ -149,6 +152,10 @@ diffs to empty, so no work happens.
 
 Cursors are sent in canvas coordinates rather than screen pixels so they track
 each viewer's own pan and zoom.
+
+Mount-time `push_event`s (channel token, stored prefs) wait for `board:ready`
+from the hooks — under runtime-hook delivery they otherwise dispatch before
+anyone is listening.
 
 **Position in the annotation list is z-order** — etcher paints in array order —
 so the diff has to treat a reshuffle as a real change, and every delta carries
@@ -164,13 +171,18 @@ time anything on the board changes.
 
 - **Images.** `BoardSync` registers `layer.setImageUploader`, feeding the file
   to a hidden `live_file_input` via `this.upload/2`. `handle_image_progress/3`
-  stores it through `PhoenixKit.Modules.Storage` and pushes the URL back. The
-  form is load-bearing — `this.upload/2` dispatches a bubbling `input` event
-  and a form's `phx-change` is what carries it to the server. Request and
-  reply are paired **by order**, which is only sound because `uploadImage`
-  serialises pastes and `max_entries` is 1; a timed-out upload therefore stays
-  in the client queue as a tombstone rather than being spliced out, so a late
-  reply can't land on the wrong request.
+  announces progress 100 and returns, then `handle_info({:store_board_image, _})`
+  writes through `PhoenixKit.Modules.Storage` — storing inside the progress
+  callback blocks the LiveView so no events flush, and the 15 s silence
+  watchdog embeds a large video. Classify through `Storage.determine_file_type/2`
+  (never hardcode `"image"` — `@image_accept` invites audio and video) and hash
+  with SHA256 so dedupe matches the media library. The form is load-bearing —
+  `this.upload/2` dispatches a bubbling `input` event and a form's `phx-change`
+  is what carries it to the server. Request and reply are paired **by order**,
+  which is only sound because `uploadImage` serialises pastes and `max_entries`
+  is 1; a timed-out upload therefore stays in the client queue as a tombstone
+  rather than being spliced out, so a late reply can't land on the wrong
+  request.
 - **Links.** `layer.setLinkUnfurler` → `handle_event("board:unfurl", …)` →
   `LinkPreview.unfurl/1`, replying with an SVG the client rasterises and sends
   back through the image path above.

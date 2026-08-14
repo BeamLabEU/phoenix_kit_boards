@@ -72,7 +72,7 @@ defmodule PhoenixKitBoards do
   # ── Optional callbacks ─────────────────────────────────────────────────
 
   @impl PhoenixKit.Module
-  def version, do: "0.4.3"
+  def version, do: "0.4.4"
 
   @impl PhoenixKit.Module
   def permission_metadata do

@@ -1,7 +1,7 @@
 defmodule PhoenixKitBoards.MixProject do
   use Mix.Project
 
-  @version "0.4.3"
+  @version "0.4.4"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_boards"
 
   def project do
@@ -91,7 +91,8 @@ defmodule PhoenixKitBoards.MixProject do
       # go, and `toolBadge`, which is how a cursor shows what its owner is
       # holding. All three are called through `typeof` guards, so an older
       # etcher loses live drags and tool cursors silently — hence pinning
-      # rather than relying on the guard.
+      # rather than relying on the guard. 0.12 is additive on those APIs; the
+      # lock tracks it, the constraint does not need to move.
       pk_dep(:fresco, "~> 0.11"),
       pk_dep(:etcher, "~> 0.11"),
 

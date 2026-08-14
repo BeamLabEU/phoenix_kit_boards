@@ -57,7 +57,7 @@ the module).
 
 ## Requirements
 
-- `phoenix_kit ~> 1.7`, `fresco ~> 0.11`, `etcher ~> 0.11` (all resolved by the
+- `phoenix_kit ~> 2.0`, `fresco ~> 0.11`, `etcher ~> 0.11` (all resolved by the
   host — this module references their components and reuses their loaded JS).
 - **PhoenixKit's Storage module, with at least one bucket enabled**, if you
   want pasted images to be uploaded rather than embedded. Without it every

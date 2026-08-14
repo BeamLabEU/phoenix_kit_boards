@@ -4,6 +4,36 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.4 - 2026-08-14
+
+### Fixed
+
+- **Audio and video pasted onto a board were stored as `file_type: "image"`**
+  (#7). `@image_accept` deliberately invites those formats, and `store/4` then
+  hardcoded `"image"` — broken thumbnails on the media page, invisible to the
+  video/audio filters, image variant processing run against a `.mov`. New
+  uploads are classified through `Storage.determine_file_type/2`, the same
+  function every core upload path already uses.
+
+- **The same file pasted onto a board and later uploaded through the media
+  page minted two rows.** Boards hashed with MD5; the media library hashes
+  with SHA256, and `store_file_in_buckets/6` dedupes on that value. The
+  checksum is now streamed SHA256, matching `Auth.calculate_file_hash/1`.
+
+- **A large video upload could be embedded after the bytes had already
+  arrived.** `handle_image_progress/3` stored the file inside the `done?`
+  branch, so `push_event` could not flush until the hash + bucket write
+  finished. The client's watchdog is 15 s of silence; a video near the 256 MB
+  cap tripped it and the shape kept the bytes. The LiveView now announces
+  progress 100 and returns, then stores; 100% rearms the watchdog for five
+  minutes rather than 15 seconds.
+
+### Changed
+
+- etcher lock `0.11.0` → `0.12.1`. The `~> 0.11` constraint already admitted
+  it; 0.12 is additive on every API this module calls (selection/snap/clipboard
+  on etcher's side; the two new prefs ride the existing opaque blob).
+
 ## 0.4.3 - 2026-08-11
 
 ### Fixed

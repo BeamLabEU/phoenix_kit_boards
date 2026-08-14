@@ -36,6 +36,17 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
   // drag the interval estimate up with it.
   const CURSOR_STALE_GAP_MS = 500;
 
+  // Silence on the transfer itself. Rearmed by every progress report.
+  const UPLOAD_SILENCE_MS = 15000;
+
+  // After the bytes have arrived the LiveView still has to hash them and
+  // write them to storage. That is one blocking call with no further
+  // progress, and a video at the 256 MB cap can take well over the
+  // transfer silence budget. The server tells us we have hit 100% *before*
+  // it starts that work, so this only applies once we know the pipeline
+  // is alive.
+  const UPLOAD_STORING_MS = 5 * 60 * 1000;
+
   // Monotonic where available: the interpolation asks how far through a glide
   // it is, and a wall clock that steps (NTP, sleep/wake) would make a cursor
   // jump or freeze.
@@ -229,7 +240,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         // an earlier timeout is not it, and rearming it would do nothing.
         const pending = (this.pendingUploads || []).find((p) => !p.settled);
         if (!pending) return;
-        this.armUploadWatchdog(pending);
+        this.armUploadWatchdog(
+          pending,
+          progress >= 100 ? UPLOAD_STORING_MS : UPLOAD_SILENCE_MS
+        );
         // Feed Etcher's placeholder bar. The server reports 0-100; Etcher
         // works in fractions.
         if (typeof pending.onProgress === "function" && typeof progress === "number") {
@@ -335,12 +349,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // is reclaimed by the reply that eventually arrives, or by `destroyed`;
     // a dropped socket, the case where no reply ever comes, tears the hook
     // down anyway.
-    armUploadWatchdog(pending) {
+    armUploadWatchdog(pending, ms) {
       clearTimeout(pending.timer);
       pending.timer = setTimeout(() => {
         pending.settled = true;
         pending.reject("no word from the server about this upload");
-      }, 15000);
+      }, ms || UPLOAD_SILENCE_MS);
     },
 
     // Send one image to the server and resolve with its stored URL.

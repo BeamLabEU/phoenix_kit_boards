@@ -11,4 +11,8 @@ defmodule PhoenixKitBoardsTest do
   test "js_sources declares the collab bundle" do
     assert [%{global: "PhoenixKitBoardsHooks"}] = PhoenixKitBoards.js_sources()
   end
+
+  test "version/0 matches mix.exs" do
+    assert PhoenixKitBoards.version() == Mix.Project.config()[:version]
+  end
 end
