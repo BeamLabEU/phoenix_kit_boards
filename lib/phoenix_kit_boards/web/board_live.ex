@@ -248,10 +248,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # isn't. Short-circuiting on `get_file_by_user_checksum/1` here would skip
   # that repair, and a file that had gone missing from storage would hand
   # back a dead URL on every subsequent paste, forever.
+  #
+  # Classified through core's one classifier, NOT hardcoded: `@image_accept`
+  # deliberately invites audio and video, and every one of them used to be
+  # stored with `file_type: "image"` — which broke them everywhere the media
+  # page trusts that column (broken thumbnail tiles, invisible to the
+  # video/audio filters, image variant processing run against a .mov).
   defp store(path, user_uuid, checksum, entry) do
     path
     |> Storage.store_file_in_buckets(
-      "image",
+      Storage.determine_file_type(entry.client_type, entry.client_name),
       user_uuid,
       checksum,
       ext_for(entry),
