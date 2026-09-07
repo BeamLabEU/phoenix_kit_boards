@@ -986,7 +986,6 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         >
           <.icon name="hero-arrow-left" class="w-5 h-5" />
         </.link>
-        <span class="font-semibold truncate">{@board.name}</span>
 
         <div class="ml-auto flex items-center gap-2">
           <div class="flex -space-x-2">

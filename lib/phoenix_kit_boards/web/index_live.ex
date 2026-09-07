@@ -59,12 +59,9 @@ defmodule PhoenixKitBoards.Web.IndexLive do
     ~H"""
     <div class="mx-auto max-w-5xl px-4 py-6 space-y-6">
       <div class="flex items-center justify-between gap-4">
-        <div>
-          <h1 class="text-2xl font-semibold">Boards</h1>
-          <p class="text-sm text-base-content/60">
-            Collaborative infinite canvases — open one in two tabs to see live sync.
-          </p>
-        </div>
+        <p class="text-sm text-base-content/60">
+          Collaborative infinite canvases — open one in two tabs to see live sync.
+        </p>
         <button type="button" phx-click="create" class="btn btn-primary btn-sm">
           <.icon name="hero-plus" class="w-4 h-4" /> New board
         </button>
