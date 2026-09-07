@@ -4,6 +4,12 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.5 - 2026-09-07
+
+### Fixed
+
+- Removed duplicate page headings from the Boards index page and a board's toolbar — each repeated the title already shown in the top breadcrumb bar.
+
 ## 0.4.4 - 2026-08-14
 
 ### Fixed
