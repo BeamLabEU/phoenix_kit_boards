@@ -153,6 +153,26 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     push(id, event, payload) {
       const link = this.get(id);
       if (!link) return false;
+
+      // Only while the line is actually up. Phoenix BUFFERS a push made on a
+      // channel that is down and flushes the lot on rejoin — which is right
+      // for an edit and wrong for everything that goes through here, all of
+      // which is a picture of this instant: where a cursor is, what is being
+      // dragged, what is being drawn.
+      //
+      // Reported from a phone: drawing replicated to the desktop live, and
+      // then "after I let go and started doing stuff on the desktop, it
+      // started redrawing in real time what I did on the phone". A phone's
+      // socket stalls — a lock screen, a change of network — and every frame
+      // of the stroke queues up behind it. On reconnect they all go out at
+      // once, and everybody watches a drawing nobody is making any more.
+      //
+      // Dropped instead. A frame that is late is not late, it is wrong: the
+      // finished shape arrives by its own road, as an edit.
+      if (!link.joined) return false;
+      if (link.socket && typeof link.socket.isConnected === "function" &&
+          !link.socket.isConnected()) return false;
+
       try {
         link.channel.push(event, payload);
         return true;
@@ -305,7 +325,53 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         }
       });
 
+      // A peer's shape while they are still drawing it. Keyed by who sent it
+      // — the shape has no uuid yet, and one person draws one at a time — and
+      // replaced by the real edit when they let go.
+      BoardLink.on(this.frescoId, "drawing", ({ id, draft, stroke }) => {
+        // A frame from a stroke that is already over. The sender drops frames
+        // it cannot send rather than queueing them, so this should not happen
+        // — but a burst that crossed the wire before the end did, or a
+        // reconnect that flushed one anyway, would otherwise start the stroke
+        // drawing itself again from the beginning, over a board where it has
+        // long since landed as a shape.
+        if (this.strokeIsOver(id, stroke)) return;
+
+        const layer = this.layer();
+        if (layer && id && typeof layer.applyDrawing === "function") {
+          layer.applyDrawing(id, draft);
+        }
+      });
+
+      // They finished, or gave up. Either way the provisional shape goes:
+      // what happens next is an ordinary edit, or nothing.
+      BoardLink.on(this.frescoId, "drawn", ({ id, stroke }) => {
+        this.noteStrokeOver(id, stroke);
+
+        const layer = this.layer();
+        if (layer && id && typeof layer.applyDrawingEnd === "function") {
+          layer.applyDrawingEnd(id);
+        }
+      });
+
       this.whenLayer((layer) => this.streamMoves(layer));
+      this.whenLayer((layer) => this.streamDrawing(layer));
+    },
+
+    // Which stroke each peer has most recently finished. One person draws one
+    // shape at a time, so the last number they sent an end for is all that is
+    // needed to recognise a frame that belongs to the past.
+    noteStrokeOver(id, stroke) {
+      if (!id || typeof stroke !== "number") return;
+      this.strokesOver = this.strokesOver || {};
+      const seen = this.strokesOver[id];
+      if (seen === undefined || stroke > seen) this.strokesOver[id] = stroke;
+    },
+
+    strokeIsOver(id, stroke) {
+      if (!id || typeof stroke !== "number" || !this.strokesOver) return false;
+      const seen = this.strokesOver[id];
+      return seen !== undefined && stroke <= seen;
     },
 
     // Report our own drags so peers can watch them happen.
@@ -321,6 +387,30 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       layer.onShapesMoving(
         (shapes) => BoardLink.push(this.frescoId, "moving", { shapes }),
         () => BoardLink.push(this.frescoId, "moved", {})
+      );
+    },
+
+    // Report our own drawing so peers watch the line appear rather than
+    // waiting for it.
+    //
+    // Batched to one report per frame by Etcher and only while a pointer is
+    // down, same as the moves. The draft travels whole because it has no
+    // uuid to patch against — it is not a shape yet.
+    streamDrawing(layer) {
+      if (typeof layer.onDrawing !== "function") return;
+      if (this._streamingDraw) return;
+      this._streamingDraw = true;
+
+      // Numbered per stroke, so a peer can tell this stroke's frames from the
+      // next one's — and tell either from a frame that arrived after the end.
+      this.strokeNo = 0;
+
+      layer.onDrawing(
+        (draft) => BoardLink.push(this.frescoId, "drawing", { draft, stroke: this.strokeNo }),
+        () => {
+          BoardLink.push(this.frescoId, "drawn", { stroke: this.strokeNo });
+          this.strokeNo += 1;
+        }
       );
     },
 
