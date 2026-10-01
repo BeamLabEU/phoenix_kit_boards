@@ -150,6 +150,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
          # persistence without ever reaching the template.
          |> assign(:initial_canvas, canvas)
          |> assign(:annotations, Boards.annotations(canvas))
+         # When each shape this client has not vouched for got here. See
+         # `@peer_grace_ms`.
+         #
+         # Seeded with the whole board, because a client that has just
+         # arrived has vouched for nothing. A reconnect is the case that
+         # matters: the LiveView process dies with the socket and a new one
+         # starts here with no memory, while the browser still holds the board
+         # as it was before the line dropped — and pushes it. Every shape
+         # stored while that client was away is missing from what it sends,
+         # and without this every one of them would read as a delete.
+         |> assign(:peer_arrivals, arrivals_now(Boards.annotations(canvas)))
          |> assign(:tools, @tools)
          |> assign(:topic, topic)
          |> assign(:me, me)
@@ -373,6 +384,122 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # still be holding the data URL and would send the bytes up again on its
   # next edit — the board would never actually get lighter for the person
   # doing the work.
+  # How long a shape that arrived from somebody else is protected from being
+  # deleted by a list that does not mention it.
+  #
+  # The two cases are indistinguishable from the list alone — a delete and an
+  # out-of-date view both read as "not there" — so they are told apart by age.
+  # A shape this board heard about a second ago cannot have been on the
+  # sender's screen when they built their payload, so its absence is
+  # ignorance. One it has held for half a minute, they had and dropped.
+  #
+  # Reported from a phone: a drawing replicating live to a desktop, and then
+  # "one of the letters I was writing disappeared, I had to redraw it". The
+  # phone's socket had stalled; its list went out stale, and the letter the
+  # desktop drew meanwhile was not in it.
+  #
+  # The window costs the opposite case: deleting somebody else's brand-new
+  # shape inside it puts the shape back, and you delete it again. Losing work
+  # that cannot be recovered is the worse of the two. It does not touch your
+  # own shapes — those never came from a peer — so drawing something and
+  # undoing it straight away is unaffected.
+  @peer_grace_ms 5_000
+
+  @doc false
+  def peer_grace_ms, do: @peer_grace_ms
+
+  defp arrivals_now(shapes) do
+    now = System.monotonic_time(:millisecond)
+    for %{"uuid" => uuid} <- shapes, is_binary(uuid), into: %{}, do: {uuid, now}
+  end
+
+  defp note_peer_arrivals(socket, created) do
+    now = System.monotonic_time(:millisecond)
+
+    arrivals =
+      for %{"uuid" => uuid} <- created || [],
+          is_binary(uuid),
+          into: socket.assigns.peer_arrivals,
+          do: {uuid, now}
+
+    assign(socket, :peer_arrivals, prune_arrivals(arrivals, now))
+  end
+
+  # The sender has now seen these: their own list mentions them, so from here
+  # on their silence about one means they deleted it.
+  defp acknowledge_arrivals(socket, incoming) do
+    seen = incoming |> uuid_order() |> MapSet.new()
+    now = System.monotonic_time(:millisecond)
+
+    arrivals =
+      socket.assigns.peer_arrivals
+      |> Map.drop(MapSet.to_list(seen))
+      |> prune_arrivals(now)
+
+    assign(socket, :peer_arrivals, arrivals)
+  end
+
+  defp prune_arrivals(arrivals, now) do
+    for {uuid, at} <- arrivals, now - at <= @peer_grace_ms, into: %{}, do: {uuid, at}
+  end
+
+  defp unseen_by_sender(socket, incoming) do
+    unseen_by_sender(
+      socket.assigns.annotations,
+      socket.assigns.peer_arrivals,
+      incoming,
+      System.monotonic_time(:millisecond)
+    )
+  end
+
+  @doc false
+  # Shapes on this board that the sender's list leaves out and cannot have
+  # known about. In the order they are stored, so they can be put back where
+  # they were rather than on top.
+  #
+  # Public for the same reason `diff/2` is: this is where a lost shape or a
+  # delete that refuses to stick would hide, and the suite runs without a DB.
+  def unseen_by_sender(stored, arrivals, incoming, now) do
+    sent = incoming |> uuid_order() |> MapSet.new()
+
+    Enum.filter(stored, fn shape ->
+      uuid = Map.get(shape, "uuid")
+
+      is_binary(uuid) and not MapSet.member?(sent, uuid) and
+        case Map.fetch(arrivals, uuid) do
+          {:ok, at} -> now - at <= @peer_grace_ms
+          :error -> false
+        end
+    end)
+  end
+
+  @doc false
+  # Back at the index each one holds now. Appending instead would report a
+  # reorder on every stale list and shuffle the board's layering for everyone.
+  def merge_restored(incoming, [], _stored), do: incoming
+
+  def merge_restored(incoming, restored, stored) do
+    index = stored |> uuid_order() |> Enum.with_index() |> Map.new()
+
+    Enum.reduce(restored, incoming, fn shape, acc ->
+      at = Map.get(index, shape["uuid"], length(acc))
+      List.insert_at(acc, min(at, length(acc)), shape)
+    end)
+  end
+
+  # The sender's board is missing these, or it would have sent them. Told
+  # directly rather than through the broadcast, which deliberately skips the
+  # sender — without this their next list would leave them out again, and the
+  # one after that would be past the window.
+  defp tell_sender_about_restored(socket, [], _annotations), do: socket
+
+  defp tell_sender_about_restored(socket, restored, annotations) do
+    push_event(socket, "board:apply", %{
+      "created" => restored,
+      "order" => uuid_order(annotations)
+    })
+  end
+
   defp tell_sender_about_hoisted(socket, [], _annotations), do: socket
 
   defp tell_sender_about_hoisted(socket, hoisted, annotations) do
@@ -525,6 +652,14 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   def handle_event("etcher:annotations-changed", %{"annotations" => incoming}, socket)
       when is_list(incoming) do
+    # An edit arrives as the WHOLE board, so a shape's absence from the list
+    # is how a delete is expressed — and it is also what a list composed a
+    # moment before somebody else's shape arrived looks like. Anything the
+    # sender cannot have seen yet is put back before the two are compared.
+    restored = unseen_by_sender(socket, incoming)
+    incoming = merge_restored(incoming, restored, socket.assigns.annotations)
+    socket = acknowledge_arrivals(socket, incoming)
+
     if empty_delta?(diff(socket.assigns.annotations, incoming)) do
       {:noreply, socket}
     else
@@ -553,7 +688,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
            |> assign(:board, board)
            |> assign(:canvas, canvas)
            |> assign(:annotations, annotations)
-           |> tell_sender_about_hoisted(hoisted, annotations)}
+           |> tell_sender_about_hoisted(hoisted, annotations)
+           |> tell_sender_about_restored(restored, annotations)}
 
         {:error, _reason} ->
           {:noreply, put_flash(socket, :error, "Could not save the board.")}
@@ -709,6 +845,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     else
       {:noreply,
        socket
+       |> note_peer_arrivals(delta["created"])
        |> assign(:annotations, incoming)
        |> assign(:canvas, Boards.put_annotations(socket.assigns.canvas, incoming))
        |> push_event("board:apply", delta)}
@@ -977,7 +1114,21 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   def render(assigns) do
     ~H"""
-    <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3">
+    <%!--
+      A finger on this page is drawing, panning or pressing a control — never
+      selecting text. The canvas itself has said so since Fresco 0.5
+      (`user-select: none`), but it does not fill the page: there is a header
+      above it and a gutter either side, ~17px wide on a 390px screen. A drag
+      that starts a few pixels off the canvas is a text drag, and it takes the
+      page with it — which is the "it selected everything" that comes and goes
+      depending on where the finger landed.
+
+      `pointer-coarse` so this costs a mouse nothing: selecting the board's
+      title or a name from the roster still works with a cursor. On iOS the
+      callout has to be named separately — a long press raises it through
+      `user-select: none`.
+    --%>
+    <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]">
       <header class="flex items-center gap-3 shrink-0">
         <.link
           navigate={Paths.boards()}

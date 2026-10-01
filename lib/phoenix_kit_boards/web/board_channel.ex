@@ -2,13 +2,18 @@ defmodule PhoenixKitBoards.Web.BoardChannel do
   @moduledoc """
   Relays a board's ephemeral traffic between the people looking at it.
 
-  Two kinds, both worthless a moment after they arrive:
+  Three kinds, all worthless a moment after they arrive:
 
     * `"cursor"` — where someone's pointer is, in canvas coordinates, so each
       viewer maps it through their own pan and zoom.
     * `"moving"` — where a shape is *while it is still being dragged*. Peers
       patch it into place and see the drag happen; the edit itself is stored
       and broadcast the usual way when the gesture ends.
+    * `"drawing"` — the shape somebody is *still drawing*, before it exists.
+      It has no uuid yet, so the draft travels whole (kind, geometry, style)
+      and peers key it by the sender: one person draws one shape at a time.
+      The finished shape arrives as an ordinary edit, which is what a reload
+      would show.
 
   Deliberately does nothing else. No database, no diff, no persistence, and
   no state beyond who is on the topic — the point of moving this off the
@@ -89,13 +94,87 @@ defmodule PhoenixKitBoards.Web.BoardChannel do
     {:noreply, socket}
   end
 
+  # A shape mid-draw. No uuid — it does not have one until the gesture ends —
+  # so the draft itself travels and the sender's id is the key a peer files it
+  # under.
+  def handle_in("drawing", %{"draft" => draft} = params, socket) do
+    case sanitize_draft(draft) do
+      nil ->
+        {:noreply, socket}
+
+      clean ->
+        broadcast_from(
+          socket,
+          "drawing",
+          %{
+            "id" => socket.assigns.peer.id,
+            "draft" => clean,
+            "stroke" => stroke_no(params)
+          }
+        )
+
+        {:noreply, socket}
+    end
+  end
+
+  # The pen came up. Peers drop the provisional shape and wait for the edit,
+  # so a draw that is abandoned — or whose save fails — leaves nothing behind
+  # rather than a shape nobody recorded.
+  def handle_in("drawn", params, socket) do
+    broadcast_from(socket, "drawn", %{
+      "id" => socket.assigns.peer.id,
+      "stroke" => stroke_no(params)
+    })
+
+    {:noreply, socket}
+  end
+
   def handle_in(_event, _params, socket), do: {:noreply, socket}
+
+  # Which stroke of this sender's a frame belongs to. Counted by the browser
+  # that drew it, and carried so a peer can recognise a frame from a stroke
+  # that has already ended — one that crossed the end on the wire, or that a
+  # reconnect flushed out of a queue — and ignore it rather than replaying a
+  # drawing nobody is making any more.
+  #
+  # Anything that is not a whole number is dropped: a peer treats a missing
+  # one as "unknown", which is what every client did before this existed.
+  defp stroke_no(%{"stroke" => n}) when is_integer(n) and n >= 0, do: n
+  defp stroke_no(_params), do: nil
 
   defp movable?(%{"uuid" => uuid, "geometry" => geometry})
        when is_binary(uuid) and is_map(geometry),
        do: true
 
   defp movable?(_), do: false
+
+  @doc false
+  # Arrives from a browser like everything else here, and goes further than
+  # most of it: `kind` picks the SVG element a peer's canvas builds, so it
+  # gets the same treatment as a tool name — short, and shaped like a key.
+  # Geometry has to be a map; the drawing layer reads the shape of it per
+  # kind and a list or a string is not something it can be asked to render.
+  # `style` is optional and travels as-is when it is a map: the layer reads
+  # the handful of keys it knows and ignores the rest.
+  #
+  # Public only so it can be tested for what it refuses — the channel is the
+  # only caller.
+  def sanitize_draft(%{"kind" => kind, "geometry" => geometry} = draft) when is_map(geometry) do
+    case tool_name(kind) do
+      nil ->
+        nil
+
+      clean_kind ->
+        base = %{"kind" => clean_kind, "geometry" => geometry}
+
+        case Map.get(draft, "style") do
+          style when is_map(style) -> Map.put(base, "style", style)
+          _ -> base
+        end
+    end
+  end
+
+  def sanitize_draft(_), do: nil
 
   # Arrives from a browser, so it can be anything. Bounded and constrained to
   # the shape a tool key has — it is relayed to every peer and ends up in a

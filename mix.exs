@@ -93,8 +93,22 @@ defmodule PhoenixKitBoards.MixProject do
       # etcher loses live drags and tool cursors silently — hence pinning
       # rather than relying on the guard. 0.12 is additive on those APIs; the
       # lock tracks it, the constraint does not need to move.
-      pk_dep(:fresco, "~> 0.11"),
-      pk_dep(:etcher, "~> 0.11"),
+      #
+      # fresco 0.13.1 is the floor for two fingers. A board stamps
+      # `data-fresco-no-capture` on the drawing overlay, and until 0.13.1 the
+      # viewer took that to mean it should ignore the finger entirely — so a
+      # second finger had nothing to pinch against and fed the stroke
+      # instead, which on a phone is a line whipping between two fingers.
+      # Written as a `>=` rather than `~> 0.13`, which would admit 0.13.0 and
+      # lose it silently.
+      #
+      # etcher 0.18 is the floor for live drawing: `onDrawing`,
+      # `applyDrawing` and `applyDrawingEnd`, which is how a peer watches a
+      # stroke appear rather than waiting out the length of it. Guarded by
+      # `typeof` like the drag APIs above, and pinned for the same reason —
+      # an older etcher loses it without saying so.
+      pk_dep(:fresco, ">= 0.13.1 and < 1.0.0"),
+      pk_dep(:etcher, "~> 0.18"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). open_fresco emits SVG by itself and
