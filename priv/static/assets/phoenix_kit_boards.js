@@ -147,7 +147,11 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
     get(id) {
       const link = this.links[id];
-      return link && link.joined ? link : null;
+      if (!link || !link.joined) return null;
+      // The transport may be back while this channel is still rejoining.
+      // Phoenix queues pushes until BOTH are ready.
+      if (typeof link.channel.canPush === "function" && !link.channel.canPush()) return null;
+      return link;
     },
 
     on(id, event, fn) {
@@ -307,6 +311,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         p.reject("board closed before the upload finished");
       });
       this.pendingUploads = [];
+      Object.keys(this.ghostTimers || {}).forEach((id) => this.retireGhost(id));
       // The link outlives the DOM otherwise — see `BoardCursors.destroyed`.
       BoardLink.close(this.frescoId);
     },
@@ -345,7 +350,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         const layer = this.layer();
         if (layer && id && typeof layer.applyDrawing === "function") {
           layer.applyDrawing(id, draft);
-          this.watchGhost(id);
+          this.watchGhost(id, stroke);
         }
       });
 
@@ -353,6 +358,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // what happens next is an ordinary edit, or nothing.
       BoardLink.on(this.frescoId, "drawn", ({ id, stroke }) => {
         this.noteStrokeOver(id, stroke);
+        const active = this.ghostStrokes && this.ghostStrokes[id];
+        if (typeof active === "number" && typeof stroke === "number" && stroke < active) return;
         this.retireGhost(id);
       });
 
@@ -367,8 +374,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     // because the ghost is absent from the board and nothing else removes it.
     // Frames arrive every frame while a pen is down, so a stroke that has gone
     // quiet this long is over.
-    watchGhost(id) {
+    watchGhost(id, stroke) {
       this.ghostTimers = this.ghostTimers || {};
+      this.ghostStrokes = this.ghostStrokes || {};
+      this.ghostStrokes[id] = stroke;
       clearTimeout(this.ghostTimers[id]);
       this.ghostTimers[id] = setTimeout(() => this.retireGhost(id), GHOST_TTL_MS);
     },
@@ -378,6 +387,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         clearTimeout(this.ghostTimers[id]);
         delete this.ghostTimers[id];
       }
+      if (this.ghostStrokes) delete this.ghostStrokes[id];
       const layer = this.layer();
       if (layer && id && typeof layer.applyDrawingEnd === "function") {
         layer.applyDrawingEnd(id);
@@ -395,9 +405,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     },
 
     strokeIsOver(id, stroke) {
-      if (!id || typeof stroke !== "number" || !this.strokesOver) return false;
-      const seen = this.strokesOver[id];
-      return seen !== undefined && stroke <= seen;
+      if (!id || typeof stroke !== "number") return false;
+      const seen = this.strokesOver && this.strokesOver[id];
+      const active = this.ghostStrokes && this.ghostStrokes[id];
+      // A newer stroke can arrive before the previous stroke's end.
+      return (seen !== undefined && stroke <= seen) ||
+        (typeof active === "number" && stroke < active);
     },
 
     // Report our own drags so peers can watch them happen.
@@ -608,7 +621,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         }
       });
 
-      created.forEach((shape) => layer.addShape(shape));
+      created.forEach((shape) => {
+        // Queued stale lists each earn a restore reply. Etcher appends even
+        // if the uuid exists, so a reply already applied must be a no-op.
+        if (typeof layer.getShape === "function" && layer.getShape(shape.uuid)) return;
+        layer.addShape(shape);
+      });
 
       // Re-impose the sender's layering, but only when it can have moved.
       //

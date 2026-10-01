@@ -51,7 +51,7 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
   """
   def scripts(assigns) do
     src = bundle_url()
-    assigns = assign(assigns, :hooks, Enum.map(@hooks, &{&1, body(&1, src)}))
+    assigns = assign(assigns, :hooks, Enum.map(@hooks, &{&1, body(&1, src, assigns.nonce)}))
 
     # `<%= %>`, not `{}`: HEEx treats the body of a `<script>` as literal text
     # and leaves `{...}` in the output untouched.
@@ -62,14 +62,15 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
     """
   end
 
-  # Built here rather than templated so the JS is plain text with two values
-  # substituted, both JSON-encoded — nothing in it depends on HEEx's rules for
+  # Built here rather than templated so the JS is plain text with its values
+  # substituted and JSON-encoded — nothing in it depends on HEEx's rules for
   # what may appear inside a `<script>`.
-  defp body(hook, src) do
+  defp body(hook, src, nonce) do
     """
     window[#{Jason.encode!("phx_hook_" <> hook)}] = (function () {
       var NAME = #{Jason.encode!(hook)};
       var SRC = #{Jason.encode!(src)};
+      var NONCE = #{Jason.encode!(nonce)};
 
       // One request per page, shared by both hooks and by every element using
       // them, and reused across re-mounts.
@@ -81,6 +82,7 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
 
           var el = document.createElement("script");
           el.src = SRC;
+          if (NONCE) el.nonce = NONCE;
           // Resolved either way. A bundle that never arrives leaves the board
           // working on its own — which is where it was before any of this —
           // rather than leaving callbacks pending for the life of the page.
@@ -184,7 +186,17 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
           // of it up.
           var state = ctx.__pkbState || {};
           if (callback === "destroyed" ? !state.mounted : state.destroyed) return;
-          if (callback === "mounted") state.mounted = true;
+          if (callback === "mounted") {
+            // LiveView copied the shim's methods when it created the hook.
+            // The bundle arrived later, so install its helpers before its
+            // mounted callback uses them. Keep the lifecycle wrappers: they
+            // carry the ordering and destroyed-before-load guards above.
+            var lifecycle = ["mounted", "updated", "disconnected", "reconnected", "destroyed"];
+            Object.keys(hook).forEach(function (key) {
+              if (lifecycle.indexOf(key) === -1) ctx[key] = hook[key];
+            });
+            state.mounted = true;
+          }
 
           try {
             hook[callback].call(ctx);

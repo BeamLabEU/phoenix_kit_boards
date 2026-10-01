@@ -94,6 +94,21 @@ const rect = (uuid, x) => ({
 
 // ── when the order really can have moved ────────────────────────────────────
 
+// Several stale lists may each earn a restore reply before the browser
+// receives the first. Etcher's addShape appends even when the uuid exists.
+{
+  const layer = makeLayer([rect("a", 0)]);
+  const hook = hookFor(layer);
+  const restore = { created: [rect("b", 5)], order: ["a", "b"] };
+  hook.apply(restore);
+  layer.shapes.set("b", rect("b", 10));
+  hook.apply(restore);
+  assert.strictEqual(layer.calls.filter((c) => c[0] === "add").length, 1,
+    "repeated restores must not append duplicate shapes");
+  assert.strictEqual(layer.shapes.size, 2);
+  assert.strictEqual(layer.shapes.get("b").geometry.x, 10, "late restores preserve subsequent local edits");
+}
+
 {
   const layer = makeLayer([rect("a", 0)]);
   hookFor(layer).apply({ created: [rect("c", 9)], order: ["a", "c"] });

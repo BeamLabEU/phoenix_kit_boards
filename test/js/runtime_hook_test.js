@@ -15,6 +15,8 @@
 //   node test/js/runtime_hook_test.js
 
 const { execFileSync } = require("child_process");
+const fs = require("fs");
+const vm = require("vm");
 const path = require("path");
 const assert = require("assert");
 
@@ -28,7 +30,7 @@ const html = execFileSync(
     "run",
     "--no-start",
     "-e",
-    `IO.puts(Phoenix.LiveViewTest.rendered_to_string(PhoenixKitBoards.Web.RuntimeHooks.scripts(%{nonce: nil, __changed__: nil})))`
+    `IO.puts(Phoenix.LiveViewTest.rendered_to_string(PhoenixKitBoards.Web.RuntimeHooks.scripts(%{nonce: "test-nonce", __changed__: nil})))`
   ],
   { cwd: ROOT, encoding: "utf8", env: { ...process.env, MIX_QUIET: "1" } }
 );
@@ -98,6 +100,43 @@ const settle = () => new Promise((r) => setImmediate(r));
 // ── the ordinary case ───────────────────────────────────────────────────────
 
 (async () => {
+  // Mount the actual bundle through the generated shim. Callback-only
+  // stand-ins cannot detect missing helpers such as armEditing and attach.
+  {
+    const win = browser();
+    const errors = [];
+    const pings = [];
+    const layer = { selectTool: () => {}, tools: () => ["grabber"] };
+    win.Etcher = { layerFor: () => layer };
+    win.Fresco = { onReady: (_id, fn) => fn({}) };
+    win.console = { error: (...args) => errors.push(args) };
+    install(win);
+
+    const hooks = ["BoardSync", "BoardCursors"].map((name) => {
+      const shim = win[`phx_hook_${name}`]();
+      shim.el = {
+        dataset: { frescoId: "canvas" },
+        addEventListener() {}, removeEventListener() {},
+        parentElement: { addEventListener() {}, removeEventListener() {} }
+      };
+      shim.handleEvent = () => {};
+      shim.pushEvent = (event) => pings.push([name, event]);
+      shim.mounted();
+      return shim;
+    });
+    vm.runInNewContext(fs.readFileSync(path.join(ROOT, "priv/static/assets/phoenix_kit_boards.js"), "utf8"), {
+      window: win, document: win.document, console: win.console,
+      setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}
+    });
+    win.injected[0].onload();
+    await settle();
+    assert.deepStrictEqual(errors, [], "actual hooks mount without missing-method failures");
+    assert.deepStrictEqual(pings, [["BoardSync", "board:ready"], ["BoardCursors", "board:ready"]]);
+    hooks.forEach((hook) => hook.destroyed());
+    await settle();
+    assert.deepStrictEqual(errors, [], "actual hooks also clean up through the shim");
+  }
+
   {
     const win = browser();
     install(win);
@@ -116,6 +155,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
     // One script requested, and nothing forwarded yet.
     assert.strictEqual(win.injected.length, 1, "asked for the bundle once");
+    assert.strictEqual(win.injected[0].nonce, "test-nonce", "bundle inherits the CSP nonce");
     assert.deepStrictEqual(log, [], "nothing forwarded before it arrives");
 
     // The bundle lands.

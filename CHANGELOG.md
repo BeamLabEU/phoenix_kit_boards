@@ -4,6 +4,21 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.7 - 2026-10-01
+
+### Fixed
+
+- Runtime hooks now install their helper methods before mounting. Hosts using
+  automatic hook delivery previously hit missing-method errors, preventing
+  collaboration, preference loading and the storage upload integration.
+- The dynamically loaded hook bundle inherits the supplied CSP nonce.
+- Ephemeral traffic is dropped while the channel is rejoining, even when its
+  WebSocket has already reconnected, preventing buffered stroke replay.
+- Repeated stale-list restore replies no longer append duplicate shapes or
+  overwrite edits made after the first restore.
+- Delayed frames and end messages from older strokes cannot replace or retire
+  a newer stroke. Closing a board cancels its ghost timers and retires ghosts.
+
 ## 0.4.6 - 2026-10-01
 
 ### Added
