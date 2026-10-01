@@ -657,11 +657,20 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     # moment before somebody else's shape arrived looks like. Anything the
     # sender cannot have seen yet is put back before the two are compared.
     restored = unseen_by_sender(socket, incoming)
-    incoming = merge_restored(incoming, restored, socket.assigns.annotations)
+    # Acknowledged from what the sender actually listed, not the merged list:
+    # the restored shapes are in the latter only because we put them there,
+    # and counting them as seen would end their protection on the first stale
+    # list — the next one, queued behind the same stalled socket, would then
+    # delete them.
     socket = acknowledge_arrivals(socket, incoming)
+    incoming = merge_restored(incoming, restored, socket.assigns.annotations)
 
     if empty_delta?(diff(socket.assigns.annotations, incoming)) do
-      {:noreply, socket}
+      # Nothing to store, but the sender's own canvas still lacks whatever was
+      # put back — a stale list that differs only by the missing shape, or the
+      # sender deleting a peer's brand-new one, lands here. Say so, or their
+      # screen and the board disagree until their next edit.
+      {:noreply, tell_sender_about_restored(socket, restored, socket.assigns.annotations)}
     else
       # Told to the room before it is written down.
       #

@@ -119,7 +119,9 @@ defmodule PhoenixKitBoards.StaleListTest do
       incoming = [shape("a"), shape("new")]
 
       assert BoardLive.unseen_by_sender(stored, %{}, incoming, @now) == []
-      assert %{"created" => [%{"uuid" => "new"}], "deleted" => []} = BoardLive.diff(stored, incoming)
+
+      assert %{"created" => [%{"uuid" => "new"}], "deleted" => []} =
+               BoardLive.diff(stored, incoming)
     end
 
     test "an empty board, and an empty list" do
@@ -160,6 +162,51 @@ defmodule PhoenixKitBoards.StaleListTest do
 
       assert src =~ "|> Map.drop(MapSet.to_list(seen))",
              "a shape the sender has now named is one they can delete"
+    end
+  end
+
+  describe "the annotations handler, end to end (no DB reached)" do
+    defp socket_with(annotations, arrivals) do
+      %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          annotations: annotations,
+          peer_arrivals: arrivals,
+          topic: "t",
+          board: nil,
+          canvas: nil
+        }
+      }
+    end
+
+    defp fresh, do: System.monotonic_time(:millisecond)
+
+    test "a stale list that differs only by the missing shape still tells the sender" do
+      stored = [shape("a"), shape("b")]
+      socket = socket_with(stored, %{"b" => fresh()})
+
+      {:noreply, socket} =
+        BoardLive.handle_event(
+          "etcher:annotations-changed",
+          %{"annotations" => [shape("a")]},
+          socket
+        )
+
+      assert [["board:apply", %{"created" => [%{"uuid" => "b"}], "order" => ["a", "b"]}]] =
+               socket.private.live_temp.push_events
+               |> Enum.map(fn [event, payload] -> [event, payload] end)
+    end
+
+    test "restored shapes stay protected, so a second stale list is restored too" do
+      stored = [shape("a"), shape("b")]
+      socket = socket_with(stored, %{"b" => fresh()})
+      params = %{"annotations" => [shape("a")]}
+
+      {:noreply, socket} = BoardLive.handle_event("etcher:annotations-changed", params, socket)
+      assert Map.has_key?(socket.assigns.peer_arrivals, "b")
+
+      {:noreply, socket} = BoardLive.handle_event("etcher:annotations-changed", params, socket)
+      assert socket.assigns.annotations == stored
     end
   end
 end

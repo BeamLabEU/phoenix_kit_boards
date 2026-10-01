@@ -43,8 +43,8 @@ or router of its own.
 
 - `phoenix_kit` (`~> 2.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
-- `fresco` (`~> 0.11`) — the infinite-canvas engine and `Fresco.Canvas` document
-- `etcher` (`~> 0.11`) — the annotation/drawing layer over the canvas (lock is 0.12; the constraint already admits it)
+- `fresco` (`>= 0.13.1 and < 1.0.0`) — the infinite-canvas engine and `Fresco.Canvas` document
+- `etcher` (`~> 0.18`) — the annotation/drawing layer over the canvas
 - `req` (`~> 0.5`) — fetches the page behind a pasted link
 - `floki` (`>= 0.34.0`) — reads its OpenGraph tags
 - `open_fresco` (`~> 0.2`) — lays the preview card out and emits it as SVG
@@ -53,7 +53,8 @@ or router of its own.
 `fresco` / `etcher` are deliberately tighter than core's pins, because this
 module calls things core never does and an older release would degrade rather
 than fail — `setImageUploader` / `setLinkUnfurler` (0.10), `onShapesMoving` /
-`toolBadge` (0.11). Narrower is still compatible — a two-part `~>` runs to the
+`toolBadge` (0.11), `onDrawing` / `applyDrawing` (etcher 0.18), and a second
+finger that pinches rather than feeding the stroke (fresco 0.13.1). Narrower is still compatible — a two-part `~>` runs to the
 next major, so core admits everything this asks for. **Core loading the JS is
 also why this module needs no host JS setup:** `fresco.js` and `etcher.js` are
 already there, so `<Fresco.canvas>` and `<Etcher.layer>` work out of the box.
@@ -140,7 +141,7 @@ All real-time traffic for a board rides one PubSub topic:
 | `{:board_cursor, id, x, y, meta, from}` | A pointer moved, in **canvas** coordinates |
 | `{:board_media, uuid, action, position, from}` | Shared playback (play/pause/seek) |
 
-Cursors and in-flight drags also have an optional ephemeral channel
+Cursors, in-flight drags and in-progress strokes (`"drawing"` / `"drawn"`, keyed by sender, ghosts that no edit replaces — the client retires one on `drawn` or after `GHOST_TTL_MS` of silence) also have an optional ephemeral channel
 (`BoardSocket` / `BoardChannel`) so they do not queue behind LiveView work.
 The LiveView path is the fallback when the host has not mounted the socket.
 
@@ -156,6 +157,13 @@ each viewer's own pan and zoom.
 Mount-time `push_event`s (channel token, stored prefs) wait for `board:ready`
 from the hooks — under runtime-hook delivery they otherwise dispatch before
 anyone is listening.
+
+**A list that omits a shape is a delete — unless the shape is brand new from a
+peer.** `peer_arrivals` records when each shape this client has not vouched for
+arrived (the whole board at mount, peer creates thereafter); for `@peer_grace_ms`
+a list that omits one has it put back, and the sender is told even when the
+resulting diff is empty. Arrivals are acknowledged from what the sender *listed*,
+never from the merged list. Pinned by `test/stale_list_test.exs`.
 
 **Position in the annotation list is z-order** — etcher paints in array order —
 so the diff has to treat a reshuffle as a real change, and every delta carries

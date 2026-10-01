@@ -4,6 +4,34 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.4.6 - 2026-10-01
+
+### Added
+
+- **Peers watch a stroke as it is drawn** (#8). A new `"drawing"` / `"drawn"`
+  pair on the ephemeral channel relays the in-progress shape (kind, geometry,
+  style), numbered per stroke so a frame from a finished stroke is ignored.
+  Requires etcher 0.18 (`onDrawing` / `applyDrawing`).
+
+### Fixed
+
+- **A stale list no longer deletes somebody's work** (#8). A shape a peer drew
+  in the last 5 s is put back when a list omits it, instead of being read as a
+  delete. Follow-ups to the PR: the restore protection is no longer ended by
+  the first stale list (a second one queued behind the same stalled socket
+  deleted the shape), and the sender is now told about restored shapes even
+  when the corrected list diffs to nothing — previously their canvas showed
+  the shape deleted while the board still held it.
+- Channel pushes are dropped while the socket is down rather than buffered and
+  replayed on reconnect (#8).
+- A peer's in-progress stroke is taken down after 4 s of silence, so a sender
+  who loses their line or closes the tab mid-stroke no longer leaves a ghost
+  line on everyone else's screen.
+- Text selection on touch screens no longer takes the page with it (#8), and
+  fresco is held at 0.13.1+ so a second finger pinches instead of feeding the
+  stroke.
+- `version/0` had drifted behind `@version` (`0.4.4` vs `0.4.5`).
+
 ## 0.4.5 - 2026-09-07
 
 ### Fixed

@@ -47,6 +47,11 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
   // is alive.
   const UPLOAD_STORING_MS = 5 * 60 * 1000;
 
+  // How long a peer's in-progress stroke may go without a frame before it is
+  // taken down as abandoned. Frames come every animation frame while a pen is
+  // down, so a stroke silent this long has ended without anyone saying so.
+  const GHOST_TTL_MS = 4000;
+
   // Monotonic where available: the interpolation asks how far through a glide
   // it is, and a wall clock that steps (NTP, sleep/wake) would make a cursor
   // jump or freeze.
@@ -340,6 +345,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         const layer = this.layer();
         if (layer && id && typeof layer.applyDrawing === "function") {
           layer.applyDrawing(id, draft);
+          this.watchGhost(id);
         }
       });
 
@@ -347,15 +353,35 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // what happens next is an ordinary edit, or nothing.
       BoardLink.on(this.frescoId, "drawn", ({ id, stroke }) => {
         this.noteStrokeOver(id, stroke);
-
-        const layer = this.layer();
-        if (layer && id && typeof layer.applyDrawingEnd === "function") {
-          layer.applyDrawingEnd(id);
-        }
+        this.retireGhost(id);
       });
 
       this.whenLayer((layer) => this.streamMoves(layer));
       this.whenLayer((layer) => this.streamDrawing(layer));
+    },
+
+    // A ghost stroke has to be taken down by somebody. Normally that is the
+    // sender's `drawn`, but it is dropped when their line is down at the
+    // moment the pen comes up, and never sent if they close the tab mid-stroke
+    // — either leaves a line on this screen that no edit will ever replace,
+    // because the ghost is absent from the board and nothing else removes it.
+    // Frames arrive every frame while a pen is down, so a stroke that has gone
+    // quiet this long is over.
+    watchGhost(id) {
+      this.ghostTimers = this.ghostTimers || {};
+      clearTimeout(this.ghostTimers[id]);
+      this.ghostTimers[id] = setTimeout(() => this.retireGhost(id), GHOST_TTL_MS);
+    },
+
+    retireGhost(id) {
+      if (this.ghostTimers) {
+        clearTimeout(this.ghostTimers[id]);
+        delete this.ghostTimers[id];
+      }
+      const layer = this.layer();
+      if (layer && id && typeof layer.applyDrawingEnd === "function") {
+        layer.applyDrawingEnd(id);
+      }
     },
 
     // Which stroke each peer has most recently finished. One person draws one
