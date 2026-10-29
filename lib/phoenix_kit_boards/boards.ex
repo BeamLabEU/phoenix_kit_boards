@@ -8,6 +8,8 @@ defmodule PhoenixKitBoards.Boards do
   """
   import Ecto.Query
 
+  alias Phoenix.PubSub
+  alias PhoenixKit.PubSubHelper
   alias PhoenixKitBoards.{Board, MediaFolders}
 
   # Virtual extent of a blank board. Panning is infinite (the `infinite_canvas`
@@ -17,6 +19,52 @@ defmodule PhoenixKitBoards.Boards do
   @blank_height 8_000
 
   defp repo, do: PhoenixKit.RepoHelper.repo()
+
+  @doc "The width and height of a blank board's canvas, in canvas units."
+  @spec canvas_size() :: {pos_integer(), pos_integer()}
+  def canvas_size, do: {@blank_width, @blank_height}
+
+  # ── Telling a place's lists that something changed ───────────────────────
+
+  @doc """
+  The PubSub topic a place's boards announce changes on. Anything that shows a
+  list of a place's boards (`PhoenixKitBoards.Web.BoardsPanel`) subscribes to it
+  and re-reads the list when a `{:boards_scope_changed, board_uuid}` arrives.
+  """
+  @spec scope_topic(scope()) :: String.t()
+  def scope_topic(nil), do: "phoenix_kit_boards:scope:unscoped"
+  def scope_topic({type, id}), do: "phoenix_kit_boards:scope:#{type}:#{id}"
+
+  @doc "Subscribe the calling process to a place's change announcements."
+  @spec subscribe_scope(scope()) :: :ok | {:error, term()}
+  def subscribe_scope(scope), do: PubSubHelper.subscribe(scope_topic(scope))
+
+  # The message says *that* something changed, never what: a private board's
+  # name must not travel to people who may not see it. Receivers re-read the
+  # list through `list_for_scope/3`, which applies visibility.
+  #
+  # Best effort: a missing PubSub server must not turn a saved board into an
+  # error.
+  defp announce(%Board{} = board) do
+    PubSub.broadcast(
+      PubSubHelper.pubsub(),
+      scope_topic(scope_of(board)),
+      {:boards_scope_changed, board.uuid}
+    )
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp announced({:ok, %Board{} = board} = result) do
+    announce(board)
+    result
+  end
+
+  defp announced(other), do: other
 
   # ── Board CRUD ────────────────────────────────────────────────────────────
 
@@ -159,7 +207,7 @@ defmodule PhoenixKitBoards.Boards do
         changeset
       end
 
-    repo().insert(changeset)
+    changeset |> repo().insert() |> announced()
   end
 
   defp scope_from(changeset) do
@@ -178,7 +226,7 @@ defmodule PhoenixKitBoards.Boards do
           {:ok, Board.t()} | {:error, :forbidden | Ecto.Changeset.t()}
   def set_visibility(%Board{} = board, visibility, user_uuid) do
     if creator?(board, user_uuid) do
-      board |> Board.visibility_changeset(visibility) |> repo().update()
+      board |> Board.visibility_changeset(visibility) |> repo().update() |> announced()
     else
       {:error, :forbidden}
     end
@@ -206,13 +254,13 @@ defmodule PhoenixKitBoards.Boards do
 
   defp toggle(board, user_uuid, changeset_fun) do
     if visible_to?(board, user_uuid),
-      do: board |> changeset_fun.() |> repo().update(),
+      do: board |> changeset_fun.() |> repo().update() |> announced(),
       else: {:error, :forbidden}
   end
 
   defp creator_only(board, user_uuid, changeset_fun) do
     if creator?(board, user_uuid),
-      do: board |> changeset_fun.() |> repo().update(),
+      do: board |> changeset_fun.() |> repo().update() |> announced(),
       else: {:error, :forbidden}
   end
 
@@ -224,6 +272,7 @@ defmodule PhoenixKitBoards.Boards do
     board
     |> Board.changeset(%{"name" => name})
     |> repo().update()
+    |> announced()
   end
 
   @doc """
@@ -242,6 +291,7 @@ defmodule PhoenixKitBoards.Boards do
           Logger.warning("[boards] could not trash a deleted board's folder: #{inspect(reason)}")
       end
 
+      announce(deleted)
       {:ok, deleted}
     end
   end
@@ -271,14 +321,62 @@ defmodule PhoenixKitBoards.Boards do
   def save_annotations(%Board{} = board, %Fresco.Canvas{} = canvas, annotations)
       when is_list(annotations) do
     canvas = put_annotations(canvas, annotations)
+    preview = preview_from(annotations)
 
     board
     |> Board.data_changeset(canvas_to_map(canvas))
+    |> Ecto.Changeset.put_change(:preview, preview)
     |> repo().update()
     |> case do
-      {:ok, board} -> {:ok, canvas, board}
-      {:error, reason} -> {:error, reason}
+      {:ok, saved} ->
+        # Only a change to what a list shows is worth a message: every edit of
+        # a busy board comes through here.
+        if saved.preview != board.preview, do: announce(saved)
+        {:ok, canvas, saved}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  @preview_text 140
+
+  @doc """
+  What a list shows of a board without opening it: the first piece of text, the
+  first image, and how many shapes it holds. Read off the annotation list a save
+  already has — nothing is rendered and no rasteriser is involved.
+
+  An image that is still embedded as a `data:` URL is skipped: it would put the
+  whole picture in every list row.
+  """
+  @spec preview_from([map()]) :: map()
+  def preview_from(annotations) when is_list(annotations) do
+    %{
+      "text" => first_text(annotations),
+      "image_url" => first_image(annotations),
+      "count" => length(annotations)
+    }
+  end
+
+  defp first_text(annotations) do
+    Enum.find_value(annotations, fn
+      %{"kind" => "text", "metadata" => %{"title" => title}} when is_binary(title) ->
+        case String.trim(title) do
+          "" -> nil
+          text -> String.slice(text, 0, @preview_text)
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp first_image(annotations) do
+    Enum.find_value(annotations, fn
+      %{"kind" => "image", "geometry" => %{"href" => "data:" <> _}} -> nil
+      %{"kind" => "image", "geometry" => %{"href" => href}} when is_binary(href) -> href
+      _ -> nil
+    end)
   end
 
   # ── Annotation helpers (the collab layer's mutable state) ─────────────────
