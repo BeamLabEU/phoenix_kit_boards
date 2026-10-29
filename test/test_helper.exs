@@ -37,6 +37,8 @@ repo_available =
     # newer version of the chain. The version sorts after core's timestamps.
     Ecto.Migrator.up(TestRepo, boards_version, PhoenixKitBoards.Test.MigrateBoards, log: false)
 
+    {:ok, _} = PhoenixKitBoards.Test.Endpoint.start_link()
+
     Ecto.Adapters.SQL.Sandbox.mode(TestRepo, :manual)
     true
   rescue

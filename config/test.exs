@@ -36,3 +36,10 @@ config :phoenix_kit_boards, PhoenixKitBoards.Test.Repo,
 
 # `PhoenixKit.RepoHelper` resolves this; without it every context call raises.
 config :phoenix_kit, repo: PhoenixKitBoards.Test.Repo
+
+# A bare endpoint for `Phoenix.LiveViewTest` (`PhoenixKitBoards.Test.Endpoint`).
+config :phoenix_kit_boards, PhoenixKitBoards.Test.Endpoint,
+  secret_key_base: String.duplicate("boards-test-secret-", 4),
+  live_view: [signing_salt: "boards-test-live-salt"],
+  pubsub_server: PhoenixKit.PubSub,
+  server: false
