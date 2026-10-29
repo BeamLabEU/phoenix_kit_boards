@@ -145,10 +145,13 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # One answer for "there is no such board" and "you may not see it": telling
   # them apart would confirm that someone's private board exists.
   defp not_found(socket) do
-    {:ok,
-     socket
-     |> put_flash(:error, "Board not found.")
-     |> push_navigate(to: socket.assigns.back_to)}
+    socket = put_flash(socket, :error, "Board not found.")
+
+    # The user route sends people back to a host page, which is in another
+    # live_session; `push_navigate` would be refused and logged.
+    if socket.assigns[:live_action] == :user,
+      do: {:ok, redirect(socket, to: socket.assigns.back_to)},
+      else: {:ok, push_navigate(socket, to: socket.assigns.back_to)}
   end
 
   # The site root, not `/dashboard`: whether the host has a user dashboard at
@@ -1123,7 +1126,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     --%>
     <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]">
       <header class="flex items-center gap-3 shrink-0">
+        <%!-- A plain link for the user route: it goes back to a host page in
+              another live_session, which `navigate` would refuse. --%>
+        <a
+          :if={@live_action == :user}
+          href={@back_to}
+          class="btn btn-ghost btn-sm btn-circle"
+          aria-label="Back to boards"
+        >
+          <.icon name="hero-arrow-left" class="w-5 h-5" />
+        </a>
         <.link
+          :if={@live_action != :user}
           navigate={@back_to}
           class="btn btn-ghost btn-sm btn-circle"
           aria-label="Back to boards"

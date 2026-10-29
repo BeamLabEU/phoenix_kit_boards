@@ -440,7 +440,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     socket = socket |> assign(:new_open?, false) |> assign(:error, nil) |> load()
 
     if socket.assigns.open == :navigate,
-      do: push_navigate(socket, to: Paths.user_board(board.uuid, socket.assigns.return_to)),
+      do: redirect(socket, to: Paths.user_board(board.uuid, socket.assigns.return_to)),
       else: socket
   end
 
@@ -837,24 +837,20 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   attr(:class, :string, default: nil)
   slot(:inner_block, required: true)
 
-  defp board_open(%{open: :new_tab} = assigns) do
+  # A plain link either way. The board page lives in PhoenixKit's own
+  # live_session and the page holding the panel almost never does, so a
+  # `navigate` would be refused by LiveView (and logged) and fall back to a
+  # full page load anyway.
+  defp board_open(assigns) do
     ~H"""
     <a
       href={Paths.user_board(@board.uuid, @return_to)}
-      target="_blank"
-      rel="noopener"
+      target={if @open == :new_tab, do: "_blank"}
+      rel={if @open == :new_tab, do: "noopener"}
       class={@class}
     >
       {render_slot(@inner_block)}
     </a>
-    """
-  end
-
-  defp board_open(assigns) do
-    ~H"""
-    <.link navigate={Paths.user_board(@board.uuid, @return_to)} class={@class}>
-      {render_slot(@inner_block)}
-    </.link>
     """
   end
 
