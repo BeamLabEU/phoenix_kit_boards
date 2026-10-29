@@ -37,6 +37,13 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
   # An event as the browser could send it, to the panel (not the host page).
   defp fire(lv, event, params), do: lv |> with_target("#panel") |> render_click(event, params)
 
+  defmodule Spy do
+    def can?(action, _user, scope) do
+      if pid = Process.get(:spy), do: send(pid, {:asked, action, scope})
+      true
+    end
+  end
+
   defp board!(user, name, attrs \\ %{}) do
     base = %{
       "name" => name,
@@ -131,6 +138,68 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       html = lv |> element("button", "Show all 5") |> render_click()
       assert length(rows(html)) == 5
+    end
+  end
+
+  describe "a place named the way the host has it" do
+    test "an integer id works end to end", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me, scope: {"order", 1001}, open: :new_tab)
+      lv |> element("button[phx-click=create_empty]") |> render_click()
+
+      assert [%{scope_type: "order", scope_id: "1001"}] =
+               Boards.list_for_scope({"order", "1001"}, me.uuid)
+
+      assert Boards.list_for_scope({"order", 1001}, me.uuid) ==
+               Boards.list_for_scope({"order", "1001"}, me.uuid)
+    end
+
+    test "atoms work too, as type or id", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me, scope: {:project, :alpha}, open: :new_tab)
+      lv |> element("button[phx-click=create_empty]") |> render_click()
+
+      assert [%{scope_type: "project", scope_id: "alpha"}] =
+               Boards.list_for_scope({"project", "alpha"}, me.uuid)
+    end
+
+    test "the host's hook is given the normalized place", %{conn: conn, me: me} do
+      me_pid = self()
+
+      Application.put_env(:phoenix_kit_boards, :authorize, {__MODULE__.Spy, :can?})
+      Process.put(:spy, me_pid)
+      {:ok, _lv, _html} = mount_panel(conn, me, scope: {"order", 1001})
+
+      assert_received {:asked, :view, {"order", "1001"}}
+    end
+
+    test "a place with no id shows nothing — not the boards that belong nowhere", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, _} = Boards.create_board(%{"name" => "Belongs nowhere", "created_by" => me.uuid})
+
+      {:ok, lv, html} = mount_panel(conn, me, scope: {"order", nil})
+      refute html =~ "Belongs nowhere"
+      refute has_element?(lv, "#panel-new")
+
+      # And a forged event is refused as well.
+      fire(lv, "create_empty", %{})
+      assert Boards.count_for_scope(nil, me.uuid) == 1
+    end
+
+    test "garbage in place of a place shows nothing", %{conn: conn, me: me} do
+      for bad <- [{"order"}, "order", 5, {1, 2, 3}, {"", "x"}, {"order", ""}, {"order", %{}}] do
+        {:ok, _lv, html} = mount_panel(conn, me, scope: bad)
+        refute html =~ "panel-new", "showed something for #{inspect(bad)}"
+      end
+    end
+
+    test "two widgets on one page, for two places, each its own", %{conn: conn, me: me} do
+      board!(me, "Alpha only", %{"scope_id" => "alpha"})
+      board!(me, "Beta only", %{"scope_id" => "beta"})
+
+      {:ok, _lv, html} = mount_panel(conn, me, scope: {"project", "alpha"})
+      assert html =~ "Alpha only"
+      refute html =~ "Beta only"
     end
   end
 

@@ -20,7 +20,7 @@ defmodule PhoenixKitBoards.Uploads do
 
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.Modules.Storage.File, as: StorageFile
-  alias PhoenixKit.Modules.Storage.ResourceFolders
+  alias PhoenixKit.Modules.Storage.{Libraries, ResourceFolders}
   alias PhoenixKitBoards.{Board, MediaFolders}
 
   @typedoc "What `Storage.store_file_in_buckets/6` answers."
@@ -39,7 +39,8 @@ defmodule PhoenixKitBoards.Uploads do
       user_uuid,
       checksum,
       ext_for(entry),
-      entry.client_name
+      entry.client_name,
+      library_opts(board)
     )
     |> file(board, user_uuid)
   end
@@ -96,6 +97,14 @@ defmodule PhoenixKitBoards.Uploads do
     do: Storage.determine_file_type(type, name)
 
   def file_type_for(_), do: Storage.determine_file_type(nil, nil)
+
+  # The file goes into the library its folder is in, or filing it would be
+  # refused ("a folder holds only its own library's files") and it would sit
+  # loose in Media. Media is the default, so nothing is passed for it.
+  defp library_opts(board) do
+    library = MediaFolders.library_uuid(board)
+    if Libraries.media?(library), do: [], else: [library_uuid: library]
+  end
 
   @doc """
   Files `stored` into the folder of `board` (made on the way if this is its

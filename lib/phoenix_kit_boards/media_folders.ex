@@ -41,15 +41,25 @@ defmodule PhoenixKitBoards.MediaFolders do
        project later keeps its files). Boards with no place go directly under
        `Boards`.
 
-  A failing hook, an unusable `{:under, _}` or any other trouble resolving
-  the parent falls back to the default, and then to the media root: **an upload
-  never fails on folders.**
+  A failing hook or function, an unusable `{:under, _}` or any other trouble
+  resolving the parent falls back to the default layout (and only if even that
+  cannot be worked out, to the media root): **an upload never fails on folders,
+  and a missing host folder never scatters files in the root.**
+
+  ## Storage libraries
+
+  The folder may be under a parent in *any* library. Files are then stored into
+  that library (`library_uuid/1`) because a folder holds only its own library's
+  files, and the folder is made with `Storage.create_folder/1`, which takes the
+  parent's library. Core's `ResourceFolders.ensure/4` does not — it stamps every
+  folder it creates with Media — so it is used only for parents in Media.
 
   ## The board's folder
 
-  Named by the name hook, else the board's name; a name that another board's
-  folder already has — or that core refuses — falls back to `board-<uuid>`,
-  which cannot collide. The folder's uuid is kept in the board's `folder_uuid`,
+  Named by the name hook, else the board's name (and renamed with the board while it
+  still carries that name, `rename_folder/3`); a name that another board's folder
+  already has — or that core refuses — falls back to `board-<uuid>`, which cannot
+  collide. The folder's uuid is kept in the board's `folder_uuid`,
   so a folder renamed or moved in the media browser is still the board's.
 
   Deleting a board trashes its folder (`trash_folder/1`). Files are never
@@ -121,21 +131,36 @@ defmodule PhoenixKitBoards.MediaFolders do
   @spec resolve_parent(folder_spec(), Boards.scope(), String.t() | nil, String.t() | nil) ::
           String.t() | nil
   def resolve_parent(spec, scope, label, actor_uuid) do
-    case explicit_parent(spec, scope, actor_uuid) do
-      {:ok, parent} -> parent
-      :none -> hook_or_default(scope, label, actor_uuid)
+    # What the developer asked for first; if that says nothing, fails or raises,
+    # the default layout — never the media root, which is where files nobody will
+    # look for end up. Only when even the default cannot be worked out is it the
+    # root.
+    case attempt(fn -> explicit_parent(spec, scope, actor_uuid) end) do
+      {:ok, {:ok, parent}} -> parent
+      _none_or_failed -> default_or_root(scope, label, actor_uuid)
     end
+  end
+
+  defp default_or_root(scope, label, actor_uuid) do
+    case attempt(fn -> hook_or_default(scope, label, actor_uuid) end) do
+      {:ok, parent} -> parent
+      :error -> nil
+    end
+  end
+
+  defp attempt(fun) do
+    {:ok, fun.()}
   rescue
     error ->
       Logger.warning("[boards] resolving a board's folder failed: #{inspect(error.__struct__)}")
-      nil
+      :error
   catch
     :exit, reason ->
       Logger.warning(
         "[boards] resolving a board's folder exited: #{ResourceFolders.describe_failure({:exit, reason})}"
       )
 
-      nil
+      :error
   end
 
   defp explicit_parent(nil, _scope, _actor), do: :none
@@ -164,9 +189,21 @@ defmodule PhoenixKitBoards.MediaFolders do
 
   defp explicit_parent(fun, scope, actor) when is_function(fun, 2) do
     case fun.(scope, actor) do
-      {:ok, uuid} -> {:ok, live_uuid(uuid)}
-      uuid when is_binary(uuid) -> {:ok, live_uuid(uuid)}
-      _ -> {:ok, nil}
+      {:ok, uuid} ->
+        {:ok, live_uuid(uuid)}
+
+      uuid when is_binary(uuid) ->
+        {:ok, live_uuid(uuid)}
+
+      nil ->
+        {:ok, nil}
+
+      other ->
+        Logger.warning(
+          "[boards] the `folder` function answered #{inspect_shape(other)}; using the default"
+        )
+
+        :none
     end
   end
 
@@ -174,6 +211,10 @@ defmodule PhoenixKitBoards.MediaFolders do
     Logger.warning("[boards] unknown `folder` option #{inspect(other)}; using the default")
     :none
   end
+
+  defp inspect_shape({:error, _}), do: "an error"
+  defp inspect_shape(other) when is_atom(other), do: inspect(other)
+  defp inspect_shape(_), do: "something unexpected"
 
   defp live_uuid(nil), do: nil
 
@@ -327,10 +368,12 @@ defmodule PhoenixKitBoards.MediaFolders do
   # ── The board's own folder (at first upload) ───────────────────────
 
   @doc """
-  The board's live media folder, or `nil` when it has none yet.
+  The board's live media folder, or `nil` when it has none yet. In whatever
+  storage library it is: a board made inside a host's own folder is in that
+  folder's library, not necessarily Media.
   """
   @spec board_folder(Board.t()) :: Folder.t() | nil
-  def board_folder(%Board{folder_uuid: uuid}), do: media_folder(uuid)
+  def board_folder(%Board{folder_uuid: uuid}), do: ResourceFolders.live_folder(uuid)
 
   @doc """
   The board's folder, found or created — **lazily**, so call it when there is a
@@ -372,11 +415,101 @@ defmodule PhoenixKitBoards.MediaFolders do
 
     name = if name == "", do: deterministic, else: name
 
-    ResourceFolders.ensure(name, parent, actor_uuid,
-      lookup: fn -> find_board_folder(board, name, deterministic, parent) end,
-      fallback_name: deterministic,
-      claim: &ResourceFolders.write_pointer(Board, board.uuid, @pointer, &1.uuid)
-    )
+    if in_media?(parent) do
+      ResourceFolders.ensure(name, parent, actor_uuid,
+        lookup: fn -> find_board_folder(board, name, deterministic, parent) end,
+        fallback_name: deterministic,
+        claim: &ResourceFolders.write_pointer(Board, board.uuid, @pointer, &1.uuid)
+      )
+    else
+      create_in_library(board, name, deterministic, parent, actor_uuid)
+    end
+  end
+
+  # Whether a folder made under `parent` belongs to Media — the media root, or a
+  # folder of it.
+  defp in_media?(nil), do: true
+
+  defp in_media?(parent) do
+    case ResourceFolders.live_folder(parent) do
+      %Folder{library_uuid: library} -> Libraries.media?(library)
+      nil -> true
+    end
+  end
+
+  # Core's `ResourceFolders.ensure/4` makes the folder with the default (Media)
+  # library whatever its parent's is — in another library the folder would exist
+  # but never show in that library's browser, and its files could not be filed
+  # into it. `Storage.create_folder/1` takes the parent's library, so a folder
+  # under a parent outside Media is made through it, under the same lock and
+  # with the same lookup, name fallback and pointer as the other path.
+  defp create_in_library(board, name, deterministic, parent, actor_uuid) do
+    result =
+      repo().transaction(fn ->
+        [name, deterministic]
+        |> Enum.uniq()
+        |> Enum.sort()
+        |> Enum.each(&ResourceFolders.lock_name(parent, &1))
+
+        folder =
+          made_meanwhile(board) ||
+            find_board_folder(board, name, deterministic, parent) ||
+            create_named(name, deterministic, parent, actor_uuid)
+
+        case ResourceFolders.write_pointer(Board, board.uuid, @pointer, folder.uuid) do
+          :ok -> folder
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+
+    case result do
+      {:ok, %Folder{} = folder} -> {:ok, folder}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Another upload may have made the folder while this one waited for the lock.
+  defp made_meanwhile(%Board{uuid: uuid}) do
+    from(b in Board, where: b.uuid == ^uuid, lock: "FOR UPDATE", select: b.folder_uuid)
+    |> repo().one()
+    |> ResourceFolders.live_folder()
+  end
+
+  defp create_named(name, deterministic, parent, actor_uuid) do
+    attrs = fn n -> %{name: n, parent_uuid: parent, user_uuid: actor_uuid} end
+
+    case Storage.create_folder(attrs.(name)) do
+      {:ok, folder} ->
+        folder
+
+      {:error, _taken_or_refused} when name != deterministic ->
+        case Storage.create_folder(attrs.(deterministic)) do
+          {:ok, folder} -> folder
+          {:error, reason} -> repo().rollback(reason)
+        end
+
+      {:error, reason} ->
+        repo().rollback(reason)
+    end
+  end
+
+  @doc """
+  The storage library the board's files belong in: its folder's, or the one its
+  parent folder is in, or Media. Uploads are stored into it so they can be filed
+  into the board's folder (a folder holds only its own library's files).
+  """
+  @spec library_uuid(Board.t()) :: String.t()
+  def library_uuid(%Board{} = board) do
+    folder =
+      ResourceFolders.live_folder(board.folder_uuid) ||
+        if(board.folder_parent_uuid != @root_marker,
+          do: ResourceFolders.live_folder(board.folder_parent_uuid)
+        )
+
+    case folder do
+      %Folder{library_uuid: library} when not is_nil(library) -> to_string(library)
+      _ -> Libraries.media_uuid()
+    end
   end
 
   # Where it goes: the parent chosen at creation if it is still there, else
@@ -393,17 +526,53 @@ defmodule PhoenixKitBoards.MediaFolders do
   # core's order, in Media only: a folder named after the board under the
   # parent unless another board points at it, then the deterministic name.
   defp find_board_folder(board, name, deterministic, parent) do
-    ResourceFolders.resolve(
-      parent: parent,
-      host_name: name,
-      name: deterministic,
-      anywhere: true,
-      claimed?: &claimed_by_other?(&1, board)
-    )
+    folder =
+      ResourceFolders.resolve(
+        parent: parent,
+        host_name: name,
+        name: deterministic,
+        anywhere: true,
+        claimed?: &claimed_by_other?(&1, board)
+      )
+
+    # Core's by-name lookups ignore the library, so at the root a same-named
+    # folder in somebody's private library could be adopted. Only Media's is.
+    case folder do
+      %Folder{library_uuid: library} = found ->
+        if parent || Libraries.media?(library), do: found
+
+      nil ->
+        nil
+    end
   end
 
   defp claimed_by_other?(%Folder{uuid: folder_uuid}, %Board{uuid: own}),
     do: ResourceFolders.claimed?(folder_uuid, own, [{Board, @pointer}])
+
+  # ── Following the board's name ─────────────────────────────────────
+
+  @doc """
+  After a board is renamed: renames its folder too, **if the folder still carries
+  the board's old name** — a folder someone renamed by hand, or that a host's name
+  hook named, is theirs and is left alone. Best effort: a name already taken
+  beside it, or any other refusal, leaves the folder as it was and never fails
+  the rename.
+  """
+  @spec rename_folder(Board.t(), String.t(), String.t()) :: :ok
+  def rename_folder(%Board{folder_uuid: uuid}, old_name, new_name) when is_binary(uuid) do
+    with %Folder{name: current} = folder <- ResourceFolders.live_folder(uuid),
+         true <- current == clean_name(old_name),
+         new when new != "" and new != current <- clean_name(new_name),
+         {:error, reason} <- Storage.update_folder(folder, %{name: new}) do
+      Logger.debug("[boards] left a board's folder name alone: #{inspect(reason)}")
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  def rename_folder(_board, _old, _new), do: :ok
 
   # ── Removing ───────────────────────────────────────────────────────
 

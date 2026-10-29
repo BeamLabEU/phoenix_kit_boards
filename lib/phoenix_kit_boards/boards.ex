@@ -32,8 +32,12 @@ defmodule PhoenixKitBoards.Boards do
   and re-reads the list when a `{:boards_scope_changed, board_uuid}` arrives.
   """
   @spec scope_topic(scope()) :: String.t()
-  def scope_topic(nil), do: "phoenix_kit_boards:scope:unscoped"
-  def scope_topic({type, id}), do: "phoenix_kit_boards:scope:#{type}:#{id}"
+  def scope_topic(scope) do
+    case scope!(scope) do
+      nil -> "phoenix_kit_boards:scope:unscoped"
+      {type, id} -> "phoenix_kit_boards:scope:#{type}:#{id}"
+    end
+  end
 
   @doc "Subscribe the calling process to a place's change announcements."
   @spec subscribe_scope(scope()) :: :ok | {:error, term()}
@@ -79,6 +83,44 @@ defmodule PhoenixKitBoards.Boards do
   @default_limit 50
 
   @doc """
+  A place as it is stored: `{type, id}` with both as strings.
+
+  A host names a place with what it has — `{"order", 1001}`, `{:project, uuid}` —
+  so a type or an id may be a string, an integer or an atom. `nil` is the
+  unscoped boards. Anything else — a `nil` id above all — is `:error`: a place
+  with no id must show **nothing**, never fall through to the boards that belong
+  nowhere.
+  """
+  @spec normalize_scope(term()) :: {:ok, scope()} | :error
+  def normalize_scope(nil), do: {:ok, nil}
+
+  def normalize_scope({type, id}) do
+    with {:ok, type} <- scope_part(type),
+         {:ok, id} <- scope_part(id) do
+      {:ok, {type, id}}
+    end
+  end
+
+  def normalize_scope(_other), do: :error
+
+  defp scope_part(part) when is_binary(part) and part != "", do: {:ok, part}
+  defp scope_part(part) when is_integer(part), do: {:ok, Integer.to_string(part)}
+
+  defp scope_part(part) when is_atom(part) and part not in [nil, true, false],
+    do: {:ok, Atom.to_string(part)}
+
+  defp scope_part(_), do: :error
+
+  # The query functions take any place `normalize_scope/1` accepts; a bad one is
+  # the caller's bug, said plainly.
+  defp scope!(scope) do
+    case normalize_scope(scope) do
+      {:ok, normalized} -> normalized
+      :error -> raise ArgumentError, "not a place: #{inspect(scope)} (expected {type, id} or nil)"
+    end
+  end
+
+  @doc """
   The live boards of one place that `user_uuid` may see: every shared board
   there, plus the user's own private ones. Pinned first, then most recently
   changed.
@@ -96,7 +138,7 @@ defmodule PhoenixKitBoards.Boards do
   @spec list_for_scope(scope(), String.t() | nil, keyword()) :: [Board.t()]
   def list_for_scope(scope, user_uuid, opts \\ []) do
     Board
-    |> in_scope(scope)
+    |> in_scope(scope!(scope))
     |> visible_query(user_uuid)
     |> archived_filter(Keyword.get(opts, :include_archived, false))
     |> search_filter(Keyword.get(opts, :search))
@@ -109,7 +151,7 @@ defmodule PhoenixKitBoards.Boards do
   @spec count_for_scope(scope(), String.t() | nil, keyword()) :: non_neg_integer()
   def count_for_scope(scope, user_uuid, opts \\ []) do
     Board
-    |> in_scope(scope)
+    |> in_scope(scope!(scope))
     |> visible_query(user_uuid)
     |> archived_filter(Keyword.get(opts, :include_archived, false))
     |> search_filter(Keyword.get(opts, :search))
@@ -272,8 +314,17 @@ defmodule PhoenixKitBoards.Boards do
     board
     |> Board.changeset(%{"name" => name})
     |> repo().update()
+    |> renamed(board.name)
     |> announced()
   end
+
+  # Its folder follows the name, where it still bears the old one.
+  defp renamed({:ok, %Board{} = updated} = result, old_name) do
+    MediaFolders.rename_folder(updated, old_name, updated.name)
+    result
+  end
+
+  defp renamed(other, _old_name), do: other
 
   @doc """
   Delete a board and move its media folder to the trash. The folder is

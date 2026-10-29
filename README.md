@@ -111,19 +111,24 @@ The panel renders nothing for a place the user may not view.
 
 ### Where a board's files go
 
-Every upload on a board is filed in that board's own media folder, created on its
-first upload, so boards in different places never mix their files in the media
-root. By default: `Boards / <place> / <board>`. Change it per panel:
+Every upload on a board is filed in that board's **own** media folder, created on its
+first upload, so one folder holds exactly one board's files and nobody has to guess
+which picture belongs to which board. By default that folder is
+`Boards / <place> / <board name>`. To put them somewhere of your own — say each order
+has a folder, however deep, and each board needs a folder inside it:
 
 ```heex
-<%!-- inside that folder --%>
-<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:under, @project.files_folder_uuid}} />
+<%!-- inside that folder (the board gets a folder of its own in it) --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:under, @order.storage_folder_uuid}} />
 
-<%!-- that chain of folders from the media root, created as needed --%>
-<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:path, ["Clients", "Acme"]}} />
+<%!-- that chain of folders from the media root, found or created --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:path, ["Orders", @order.number, "Boards"]}} />
 
 <%!-- the media root itself --%>
 <PhoenixKitBoards.Web.Components.boards_panel ... folder={:root} />
+
+<%!-- or work it out when a board is made: fn {type, id}, actor_uuid -> {:ok, folder_uuid} end --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={&MyApp.Orders.boards_folder/2} />
 ```
 
 or for the whole app, with the same hook convention the other modules use:
@@ -134,7 +139,33 @@ config :phoenix_kit_boards,
   attachments_folder_name: {MyApp.Media, :board_name}        # fun(board, actor_uuid)
 ```
 
-Deleting a board moves its folder to the media trash; files are never deleted.
+What to know:
+
+- The parent is chosen **when the board is made** and remembered, so changing `folder`
+  later affects new boards only. The board's own folder is made by its first upload (or
+  by `PhoenixKitBoards.MediaFolders.ensure_folder/2` if you want it to exist at once, to
+  link to it).
+- The folder is named after the board and **follows a rename** — unless someone renamed
+  the folder by hand, or your name hook named it, in which case it is left alone. Two
+  boards with the same name beside each other get `board-<uuid>` for the second.
+- The folder may be in **any storage library**, not only Media: files are stored into
+  the folder's library, and the board's folder appears in that library's browser.
+  (Core's own `ResourceFolders.ensure/4` stamps new folders with the Media library
+  whatever their parent's is; boards makes such folders through `Storage.create_folder/1`
+  instead.) A *managed* library refuses new folders, so files there are stored but stay
+  loose and a warning is logged.
+- A `folder` that is not a live folder, or a function that fails, falls back to the
+  default layout — never the media root, where nobody would look.
+- Deleting a board moves its folder to the media trash; files are never deleted.
+
+### What a place can be
+
+`scope` is a pair of a type and an id: strings, integers or atoms, so `{"order", 1001}`,
+`{:project, project.id}` and `{"page", "/docs/setup"}` all work. They are stored as
+strings, and **that is what the `:authorize` hook receives** (`{"order", "1001"}`). A
+place with a missing id (`{"order", nil}`) shows nothing — never the boards that belong
+nowhere. Nothing in your database refers to a board: deleting an order does not delete
+its boards or folder (find them by `scope` with `PhoenixKitBoards.Boards.list_for_scope/3`).
 
 ### Staying current
 

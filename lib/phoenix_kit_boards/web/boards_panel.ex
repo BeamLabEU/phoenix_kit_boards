@@ -33,8 +33,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
     * `id` — required, unique on the page
     * `current_user` — required; with none the widget only asks to sign in
-    * `scope` — `{type, id}` naming the place (`{"project", uuid}`,
-      `{"page", "/docs/setup"}`); `nil` for boards that belong nowhere
+    * `scope` — `{type, id}` naming the place; each a string, integer or atom
+      (`{"project", uuid}`, `{"order", 1001}`, `{"page", "/docs/setup"}`), kept as
+      strings, which is what the `:authorize` hook is given. `nil` is the boards
+      that belong nowhere; a place with a missing id shows nothing at all
     * `label` — what the place's media folder is called, and a small heading
     * `show_label` — `false` to keep the label for the folder name but not draw
       it (default `true`), for a page that already has its own heading
@@ -127,14 +129,15 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp assign_config(socket, assigns) do
     user = assigns[:current_user]
-    previous = socket.assigns[:user_uuid]
+    previous = {socket.assigns[:user_uuid], socket.assigns[:scope]}
     user_uuid = user_uuid(user)
+    {scope, scope_ok?} = scope_of(assigns[:scope])
 
     socket
     |> assign(:id, assigns.id)
     |> assign(:user, user)
     |> assign(:user_uuid, user_uuid)
-    |> assign(:scope, assigns[:scope])
+    |> assign(:scope, scope)
     |> assign(:label, assigns[:label])
     |> assign(:show_label?, Map.get(assigns, :show_label, true))
     |> assign(:folder, assigns[:folder])
@@ -146,21 +149,30 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:class, assigns[:class])
     |> assign(:visibility_options, visibility_options(assigns[:visibility_options]))
     |> assign(:default_visibility, default_visibility(assigns))
-    |> assign_access(user, previous != user_uuid)
+    |> assign_access(user, scope_ok?, previous != {user_uuid, scope})
   end
 
   # What the host allows and whether this user is an admin is looked up once per
   # user, not on every refresh: the second reads roles and permissions.
-  defp assign_access(socket, user, true = _changed) do
+  defp assign_access(socket, user, scope_ok?, true = _changed) do
     scope = socket.assigns.scope
 
     socket
-    |> assign(:can_view?, Access.can?(:view, user, scope))
-    |> assign(:can_create?, Access.can?(:create, user, scope))
+    |> assign(:can_view?, scope_ok? and Access.can?(:view, user, scope))
+    |> assign(:can_create?, scope_ok? and Access.can?(:create, user, scope))
     |> assign(:admin?, admin?(user))
   end
 
-  defp assign_access(socket, _user, false), do: socket
+  defp assign_access(socket, _user, _scope_ok?, false), do: socket
+
+  # A place the host named badly (no id, say) shows nothing at all — it must
+  # not fall back to the boards that belong nowhere.
+  defp scope_of(scope) do
+    case Boards.normalize_scope(scope) do
+      {:ok, normalized} -> {normalized, true}
+      :error -> {nil, false}
+    end
+  end
 
   defp admin?(nil), do: false
   defp admin?(user), do: user |> Scope.for_user() |> Access.admin?()
