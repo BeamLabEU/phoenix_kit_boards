@@ -44,33 +44,52 @@ the module).
   a contact, a page…), be private to its creator or shared with everyone who can
   see that place, and keep its files in a media folder of its own. See
   "Boards in your own pages" below.
-- **A drop-in panel** — `PhoenixKitBoards.Web.Components.boards_panel/1` lists a
-  place's boards and lets people create one, or save a note or a dropped image
-  as a board in one step.
+- **A drop-in widget** — `PhoenixKitBoards.Web.Components.boards_panel/1` is a grid
+  of a place's quick boards with a **+** tile: start from nothing, a note or a
+  picture.
 
 ## Boards in your own pages
 
+A widget for the quick boards of one place — put it in a section of any page,
+wherever people jot things down:
+
 ```heex
 <PhoenixKitBoards.Web.Components.boards_panel
-  id="project-boards"
+  id="project-notes"
   scope={{"project", @project.uuid}}
-  label={@project.name}
+  label="Notes"
   current_user={@current_scope.user}
   return_to={~p"/projects/#{@project}"}
 />
 ```
 
-`scope` is `{type, id}` — any pair of strings, so it names a record
-(`{"project", uuid}`) or something that is not one (`{"page", "/docs/setup"}`).
-The panel shows the boards of that place the signed-in user may see: everyone's
-**shared** boards and their own **private** ones. It has a *New board* button and
-a quick-capture box (type a note, or drop an image, and it becomes a board
-without opening the editor). Each row can be renamed, pinned, made private or
-shared, archived or deleted. Layouts: `:list`, `:grid`, `:compact`. Every
-attribute is in the `PhoenixKitBoards.Web.BoardsPanel` moduledoc.
+It is a grid of tiles, one per board, and a last tile of the same size that makes a
+new one. With no boards yet that tile is all there is, centred:
 
-Boards opened from the panel open at `/dashboard/boards/:id` (so people who are
-not admins can open them) and link back to `return_to`.
+- the big **+** makes an empty canvas and opens it;
+- **Text** makes a canvas with a note already on it;
+- **Image** makes a canvas with a picture already on it — the phone's camera or any
+  file, and the tile is a drop target too.
+
+Text and image boards stay on the page and show up as tiles; the empty one opens,
+since there is nothing in it to see. A tile's menu renames, pins, makes private or
+shared, archives or deletes. The widget does not manage places or projects: *you*
+choose what place it is for (`scope` is any `{type, id}` pair of strings — a record,
+`{"project", uuid}`, or something that is not one, `{"page", "/docs/setup"}`) and put
+one wherever you want one. Every attribute is in the `PhoenixKitBoards.Web.BoardsPanel`
+moduledoc; the ones you will reach for:
+
+| attribute | what it does |
+|---|---|
+| `folder` | where the files of these boards go (below) |
+| `visibility_options` / `default_visibility` | who can see what people create here; one value hides the choice (`[:private]` = a personal notepad, `[:shared]` = a team one) |
+| `actions` | which ways to start a board to offer, from `[:empty, :text, :image]` |
+| `limit` | tiles shown before "Show all" |
+| `open` | `:navigate` or `:new_tab` |
+| `show_label` | `false` to keep `label` for the folder name without drawing it |
+
+Boards opened from the widget open at `/dashboard/boards/:id` (so people who are not
+admins can open them) and link back to `return_to`.
 
 ### Who may see a place
 
@@ -119,7 +138,7 @@ Deleting a board moves its folder to the media trash; files are never deleted.
 
 ### Staying current
 
-The panel re-reads itself every few seconds (`poll`, in milliseconds; `0` turns it
+The widget re-reads itself every few seconds (`poll`, in milliseconds; `0` turns it
 off), which needs nothing from your page. For instant updates, subscribe your
 LiveView to the place and forward the message:
 
@@ -128,7 +147,7 @@ LiveView to the place and forward the message:
 PhoenixKitBoards.Boards.subscribe_scope({"project", project.uuid})
 
 def handle_info({:boards_scope_changed, _board_uuid}, socket) do
-  PhoenixKitBoards.Web.BoardsPanel.refresh("project-boards")
+  PhoenixKitBoards.Web.BoardsPanel.refresh("project-notes")
   {:noreply, socket}
 end
 ```

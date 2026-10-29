@@ -74,9 +74,31 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert html =~ ~r/Panel Co\s*<span[^>]*>\s*2\s*</
     end
 
-    test "an empty place says so", %{conn: conn, me: me} do
+    test "show_label: false keeps the label for the folder but does not draw it", %{
+      conn: conn,
+      me: me
+    } do
+      board!(me, "One")
+      {:ok, _lv, html} = mount_panel(conn, me, show_label: false)
+      refute html =~ "Panel Co"
+    end
+
+    test "an empty place is just the new-board tile, with its three ways in", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, lv, html} = mount_panel(conn, me)
+
+      assert has_element?(lv, "#panel-new button[phx-click=create_empty]")
+      assert has_element?(lv, "#panel-new button[phx-click=text_open]")
+      assert has_element?(lv, "#panel-image input[type=file]")
+      assert rows(html) == []
+    end
+
+    test "with boards, the new-board tile comes after them", %{conn: conn, me: me} do
+      board!(me, "First")
       {:ok, _lv, html} = mount_panel(conn, me)
-      assert html =~ "No boards here yet"
+      assert :binary.match(html, "First") < :binary.match(html, ~s(id="panel-new"))
     end
 
     test "private and quick boards are marked", %{conn: conn, me: me} do
@@ -97,15 +119,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
     test "without a user it only asks to sign in", %{conn: conn} do
       {:ok, _lv, html} = mount_panel(conn, nil)
       assert html =~ "Sign in"
-      refute html =~ "New board"
-    end
-
-    for layout <- [:list, :grid, :compact] do
-      test "the #{layout} layout renders the boards", %{conn: conn, me: me} do
-        board!(me, "Layout board")
-        {:ok, _lv, html} = mount_panel(conn, me, layout: unquote(layout))
-        assert html =~ "Layout board"
-      end
+      refute html =~ "panel-new"
     end
 
     test "only `limit` boards show, with a way to show them all", %{conn: conn, me: me} do
@@ -117,16 +131,6 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       html = lv |> element("button", "Show all 5") |> render_click()
       assert length(rows(html)) == 5
-    end
-
-    test "search narrows the list", %{conn: conn, me: me} do
-      for n <- 1..9, do: board!(me, "Plain #{n}")
-      board!(me, "Needle")
-      {:ok, lv, _} = mount_panel(conn, me)
-
-      html = lv |> form("form[phx-change=search]", %{"q" => "needle"}) |> render_change()
-      assert html =~ "Needle"
-      refute html =~ "Plain 1"
     end
   end
 
@@ -147,7 +151,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       {:ok, _lv, html} = mount_panel(conn, me)
       refute html =~ "Secret place board"
       refute html =~ "Panel Co"
-      refute html =~ "New board"
+      refute html =~ "panel-new"
     end
 
     test "view-only users see boards but cannot add any", %{conn: conn, me: me} do
@@ -156,50 +160,38 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       {:ok, lv, html} = mount_panel(conn, me)
       assert html =~ "Visible"
-      refute html =~ "New board"
-      refute html =~ "Jot a note"
+      refute html =~ "panel-new"
 
       # Not just hidden: a forged event is refused too.
-      html = fire(lv, "create", %{"name" => "sneaky"})
+      html = fire(lv, "create_empty", %{})
       assert html =~ "cannot add boards"
       assert Boards.count_for_scope(@scope, me.uuid) == 1
     end
   end
 
   describe "creating" do
-    test "New board creates a board in the place and opens it", %{conn: conn, me: me} do
+    test "the big + makes an empty quick board in the place and opens it", %{conn: conn, me: me} do
       {:ok, lv, _} = mount_panel(conn, me, return_to: "/projects/panel")
-      lv |> element("button", "New board") |> render_click()
-
-      lv
-      |> form("form[phx-submit=create]", %{"name" => "Roadmap", "visibility" => "private"})
-      |> render_submit()
+      lv |> element("button[phx-click=create_empty]") |> render_click()
 
       [board] = Boards.list_for_scope(@scope, me.uuid)
-      assert board.name == "Roadmap"
-      assert board.visibility == "private"
+      assert board.kind == "quick"
+      assert board.name =~ ~r/^Board · /
+      assert board.visibility == "shared"
       assert board.created_by == me.uuid
-      assert board.kind == "canvas"
+      assert board |> Boards.load_canvas() |> Boards.annotations() == []
 
       {path, _flash} = assert_redirect(lv)
       assert path =~ "/dashboard/boards/#{board.uuid}"
       assert path =~ "return_to=%2Fprojects%2Fpanel"
     end
 
-    test "open: :new_tab stays on the page", %{conn: conn, me: me} do
+    test "open: :new_tab stays on the page and links open in a new tab", %{conn: conn, me: me} do
       {:ok, lv, _} = mount_panel(conn, me, open: :new_tab)
-      lv |> element("button", "New board") |> render_click()
-      html = lv |> form("form[phx-submit=create]", %{"name" => "Side"}) |> render_submit()
+      html = lv |> element("button[phx-click=create_empty]") |> render_click()
 
-      assert html =~ "Side"
+      assert length(rows(html)) == 1
       assert html =~ ~s(target="_blank")
-    end
-
-    test "a blank name becomes Untitled board", %{conn: conn, me: me} do
-      {:ok, lv, _} = mount_panel(conn, me, open: :new_tab)
-      lv |> element("button", "New board") |> render_click()
-      lv |> form("form[phx-submit=create]", %{"name" => "  "}) |> render_submit()
-      assert [%{name: "Untitled board"}] = Boards.list_for_scope(@scope, me.uuid)
     end
 
     test "visibility_options limits the choice, and a forged value is ignored", %{
@@ -207,11 +199,29 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       me: me
     } do
       {:ok, lv, html} =
-        mount_panel(conn, me, visibility_options: [:private], default_visibility: :private)
+        mount_panel(conn, me,
+          visibility_options: [:private],
+          default_visibility: :private,
+          open: :new_tab
+        )
 
       refute html =~ "Everyone here"
+      refute has_element?(lv, "select[name=visibility]")
 
-      fire(lv, "create", %{"name" => "Forged", "visibility" => "shared"})
+      fire(lv, "set_visibility", %{"visibility" => "shared"})
+      fire(lv, "create_empty", %{})
+      assert [%{visibility: "private"}] = Boards.list_for_scope(@scope, me.uuid)
+    end
+
+    test "with both options the person chooses, and the choice applies to what they make", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, lv, _} = mount_panel(conn, me, open: :new_tab)
+
+      lv |> form("#panel-visibility", %{"visibility" => "private"}) |> render_change()
+      lv |> element("button[phx-click=create_empty]") |> render_click()
+
       assert [%{visibility: "private"}] = Boards.list_for_scope(@scope, me.uuid)
     end
 
@@ -219,46 +229,54 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       {:ok, lv, _} =
         mount_panel(conn, me, open: :new_tab, folder: {:path, ["PanelTest", "Files"]})
 
-      fire(lv, "create", %{"name" => "Filed"})
-
+      fire(lv, "create_empty", %{})
       [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert Repo.get!(Folder, board.folder_parent_uuid).name == "Files"
+    end
 
-      assert Repo.get!(
-               Folder,
-               board.folder_parent_uuid
-             ).name == "Files"
+    test "`actions` limits the ways to start a board", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me, actions: [:text])
+
+      assert has_element?(lv, "button[phx-click=text_open]")
+      refute has_element?(lv, "button[phx-click=create_empty]")
+      refute has_element?(lv, "#panel-image")
     end
   end
 
   describe "quick capture" do
-    test "a note becomes a quick board without leaving the page", %{conn: conn, me: me} do
+    test "Text opens a note in the tile; saving makes a board without leaving the page", %{
+      conn: conn,
+      me: me
+    } do
       {:ok, lv, _} = mount_panel(conn, me)
 
-      html =
-        lv
-        |> form("form[phx-submit=quick_note]", %{
-          "note" => "Remember the milk",
-          "visibility" => "shared"
-        })
-        |> render_submit()
+      lv |> element("button[phx-click=text_open]") |> render_click()
+      assert has_element?(lv, "#panel-note textarea")
+
+      html = lv |> form("#panel-note", %{"note" => "Remember the milk"}) |> render_submit()
 
       assert html =~ "Remember the milk"
+      refute has_element?(lv, "#panel-note")
       [board] = Boards.list_for_scope(@scope, me.uuid)
       assert board.kind == "quick"
       assert board.preview["text"] == "Remember the milk"
     end
 
-    test "an empty note is refused with a message", %{conn: conn, me: me} do
+    test "cancelling the note makes nothing", %{conn: conn, me: me} do
       {:ok, lv, _} = mount_panel(conn, me)
-      html = lv |> form("form[phx-submit=quick_note]", %{"note" => "   "}) |> render_submit()
-      assert html =~ "Write something first"
+      lv |> element("button[phx-click=text_open]") |> render_click()
+      lv |> element("button[phx-click=text_cancel]") |> render_click()
+
+      refute has_element?(lv, "#panel-note")
       assert Boards.count_for_scope(@scope, me.uuid) == 0
     end
 
-    test "can be switched off", %{conn: conn, me: me} do
-      {:ok, _lv, html} = mount_panel(conn, me, quick_capture: false)
-      refute html =~ "Jot a note"
-      refute html =~ "Drop an image"
+    test "an empty note is refused with a message", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      lv |> element("button[phx-click=text_open]") |> render_click()
+      html = lv |> form("#panel-note", %{"note" => "   "}) |> render_submit()
+      assert html =~ "Write something first"
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
     end
 
     test "a dropped image becomes a quick board, and its file lands in the board's folder",
@@ -358,10 +376,13 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       board = board!(me, "Toggle")
       {:ok, lv, _} = mount_panel(conn, me)
 
-      lv |> element(~s(button[phx-click=visibility][phx-value-to=private])) |> render_click()
+      lv
+      |> element(~s(button[phx-click=board_visibility][phx-value-to=private]))
+      |> render_click()
+
       assert Boards.get_board(board.uuid).visibility == "private"
 
-      lv |> element(~s(button[phx-click=visibility][phx-value-to=shared])) |> render_click()
+      lv |> element(~s(button[phx-click=board_visibility][phx-value-to=shared])) |> render_click()
       assert Boards.get_board(board.uuid).visibility == "shared"
     end
 
@@ -390,7 +411,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       assert has_element?(lv, "button[phx-click=pin]")
       refute has_element?(lv, "button[phx-click=rename_start]")
-      refute has_element?(lv, "button[phx-click=visibility]")
+      refute has_element?(lv, "button[phx-click=board_visibility]")
       refute has_element?(lv, "button[phx-click=archive]")
       refute has_element?(lv, "button[phx-click=delete]")
     end
@@ -405,7 +426,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
             {"rename_save", %{"board_id" => theirs.uuid, "name" => "Hijacked"}},
             {"delete", %{"id" => theirs.uuid}},
             {"archive", %{"id" => theirs.uuid}},
-            {"visibility", %{"id" => theirs.uuid, "to" => "private"}}
+            {"board_visibility", %{"id" => theirs.uuid, "to" => "private"}}
           ] do
         html = fire(lv, event, params)
         assert html =~ "Only the board&#39;s creator", "#{event} was not refused"

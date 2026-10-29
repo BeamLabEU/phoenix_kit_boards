@@ -33,6 +33,18 @@ defmodule PhoenixKitBoards.Quick do
   @name_max 60
 
   @doc """
+  Makes an empty quick board — a blank canvas to open and write on. Named after
+  the moment it was made, since there is nothing else to name it by; renaming
+  is one click in the panel.
+
+  Takes the same options as `create_note/4`.
+  """
+  @spec create_empty(Boards.scope(), String.t(), keyword()) ::
+          {:ok, PhoenixKitBoards.Board.t()} | {:error, term()}
+  def create_empty(scope, user_uuid, opts \\ []),
+    do: create(scope, user_uuid, dated("Board"), opts)
+
+  @doc """
   Makes a board holding `text`. `{:error, :empty}` for a note with nothing in it.
 
   ## Options

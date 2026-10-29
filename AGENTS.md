@@ -102,27 +102,21 @@ Implemented via `pk_dep/3` in `mix.exs` — never hand-edit a path dep in.
 - **`PhoenixKitBoards.Uploads`** (`uploads.ex`) — stores a file and files it into
   the board's folder. **Filing never fails an upload.** `BoardLive` and quick
   capture share it.
-- **`PhoenixKitBoards.Quick`** (`quick.ex`) — a board from a note or an image;
+- **`PhoenixKitBoards.Quick`** (`quick.ex`) — a board from nothing, a note or an image;
   builds the shapes with the structure the editor writes, sized for the 12000 ×
   8000 canvas a board starts with.
-- **`Web.BoardsPanel`** / **`Web.Components`** — the drop-in list (a
-  `LiveComponent` and its function-component wrapper). Every event re-checks the
-  board against the panel's own place and the user; the browser's ids are never
-  trusted. It refreshes on a timer because a component cannot attach `handle_info`
-  hooks — **do not subscribe the host's process to PubSub from the component**:
-  a host `handle_info` with no catch-all would crash.
-- **`PhoenixKitBoards.Migrations`** (`migrations.ex`) — versioned migration
-  coordinator; see "Versioned migrations" below.
-- **`PhoenixKitBoards.Routes`** (`routes.ex`) — route macros returned from
-  `route_module/0`; PhoenixKit injects them inside the admin `live_session`.
-- **`PhoenixKitBoards.Paths`** (`paths.ex`) — every link/redirect, via
-  `PhoenixKit.Utils.Routes.path/1`.
-- **`PhoenixKitBoards.LinkPreview`** (`link_preview.ex`) — turns a pasted URL
-  into a preview-card SVG: fetch → OpenGraph → `OpenFresco.Scene` → SVG. The
-  fetch is the careful part; read its moduledoc before touching it.
-- **`Web.IndexLive`** — the list page: create, open, delete.
-- **`Web.BoardLive`** — a single board: canvas, collaboration, presence,
-  cursors, image uploads, link unfurling.
+- **`Web.BoardsPanel`** / **`Web.Components`** — the drop-in widget (a
+  `LiveComponent` and its function-component wrapper): a grid of square tiles,
+  one per board, plus a last tile of the same size that makes one (big **+** =
+  empty canvas that opens, **Text** / **Image** = a canvas with the note or picture
+  already on it, which stays on the page). With no boards the new-board tile is
+  alone and centred. In the grid the tile's two small buttons are icon-only so it
+  stays square. Every event re-checks the board against the widget's own place and
+  the user; the browser's ids are never trusted. It refreshes on a timer because a
+  component cannot attach `handle_info` hooks — **do not subscribe the host's
+  process to PubSub from the component**: a host `handle_info` with no catch-all
+  would crash. It deliberately does not manage places/projects — the host chooses
+  `scope`.
 
 ### Routes
 

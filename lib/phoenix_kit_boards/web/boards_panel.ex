@@ -1,42 +1,56 @@
 defmodule PhoenixKitBoards.Web.BoardsPanel do
   @moduledoc """
-  A list of the boards that belong to one place, to drop into any page.
+  A widget for the quick boards of one place — drop it into a section of your
+  own page, wherever people jot things down.
 
       <PhoenixKitBoards.Web.Components.boards_panel
-        id="project-boards"
+        id="project-notes"
         scope={{"project", @project.uuid}}
-        label={@project.name}
+        label="Notes"
         current_user={@current_scope.user}
         return_to={~p"/projects/\#{@project}"}
       />
 
-  (or `<.live_component module={PhoenixKitBoards.Web.BoardsPanel} id=… … />`
-  — they are the same thing.)
+  (or `<.live_component module={PhoenixKitBoards.Web.BoardsPanel} id=… … />` —
+  they are the same thing.)
 
-  It shows the boards of `scope` that the signed-in user may see — everyone's
-  shared ones and their own private ones — with a **New board** button and, by
-  default, a **quick capture** box: type a note or drop an image and it becomes
-  a board in one step, without opening the editor. Each row can be renamed,
-  pinned, made private or shared again, archived or deleted.
+  It is a grid of tiles, one per board, and a last tile of the same size that
+  makes a new one. Until there is a board, that tile is all there is, centred:
+
+    * the big **+** makes an empty canvas and opens it;
+    * **Text** makes a canvas with a note already on it;
+    * **Image** takes a picture (the phone's camera, or any file — it is also a
+      drop target) and makes a canvas with it already on it.
+
+  Text and image boards stay on the page and appear as tiles; the empty one
+  opens, because there is nothing in it to see. Each tile has a menu: rename,
+  pin, make private or shared, archive, delete.
+
+  The widget does not manage places or projects — *you* decide what place it
+  is for, by `scope`, and put one wherever you want one.
 
   ## Attributes
 
     * `id` — required, unique on the page
-    * `current_user` — required; with none the panel only asks to sign in
+    * `current_user` — required; with none the widget only asks to sign in
     * `scope` — `{type, id}` naming the place (`{"project", uuid}`,
-      `{"page", "/docs/setup"}`); `nil` for the boards that belong nowhere
-    * `label` — the place's human name: the heading, and what the place's media
-      folder is called
-    * `folder` — where the boards' files go, see `PhoenixKitBoards.MediaFolders`
-      (`{:under, uuid}`, `{:path, ["Clients", "Acme"]}`, `:root`, or a function);
-      omit it for the host's hook or the default `Boards / <place>` layout
+      `{"page", "/docs/setup"}`); `nil` for boards that belong nowhere
+    * `label` — what the place's media folder is called, and a small heading
+    * `show_label` — `false` to keep the label for the folder name but not draw
+      it (default `true`), for a page that already has its own heading
+    * `folder` — where the files of these boards go, see
+      `PhoenixKitBoards.MediaFolders` (`{:under, uuid}`, `{:path, ["Clients",
+      "Acme"]}`, `:root`, or a function); omit it for the host's hook or the
+      default `Boards / <place> / <board>`
     * `visibility_options` — which of `[:private, :shared]` a person may choose
-      (default both; `[:private]` makes a personal-notes panel)
+      (default both; one value hides the choice, so `[:private]` makes a
+      personal notepad and `[:shared]` a team one)
     * `default_visibility` — `:shared` or `:private`
-    * `layout` — `:list` (default), `:grid` or `:compact`
-    * `limit` — how many boards to show before "Show all" (default 20)
-    * `quick_capture` — show the note / image box (default `true`)
-    * `open` — `:navigate` (default) or `:new_tab`
+    * `actions` — which ways to start a board to offer, from `[:empty, :text,
+      :image]` (default all three)
+    * `limit` — tiles shown before "Show all" (default 11, so a row of four fills
+      neatly with the new-board tile)
+    * `open` — `:navigate` (default) or `:new_tab`: what opening a board does
     * `return_to` — the page's own path, so an opened board can link back to it
     * `poll` — milliseconds between refreshes (default 5000; `0` for none)
     * `class` — extra classes for the wrapper
@@ -45,13 +59,13 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   Private is the creator's alone and the module enforces that itself. Whether a
   user may look at a *place* at all is the host's call — see
-  `PhoenixKitBoards.Access` and its `:authorize` hook. The panel renders
-  nothing for a place the user may not view, and every action re-checks
-  against the stored board, never the browser's say-so.
+  `PhoenixKitBoards.Access` and its `:authorize` hook. The widget renders
+  nothing for a place the user may not view, and every action re-checks against
+  the stored board, never the browser's say-so.
 
   ## Staying current
 
-  Other people's changes appear on their own: the panel re-reads its list on a
+  Other people's changes appear on their own: the widget re-reads its list on a
   timer (`poll`). That needs nothing from the host. For *instant* updates a host
   can subscribe its LiveView to the place and forward the message:
 
@@ -59,11 +73,11 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       PhoenixKitBoards.Boards.subscribe_scope({"project", project.uuid})
 
       def handle_info({:boards_scope_changed, _board_uuid}, socket) do
-        PhoenixKitBoards.Web.BoardsPanel.refresh("project-boards")
+        PhoenixKitBoards.Web.BoardsPanel.refresh("project-notes")
         {:noreply, socket}
       end
 
-  The panel does not subscribe the host's process itself: a host `handle_info`
+  The widget does not subscribe the host's process itself: a host `handle_info`
   with no catch-all would crash on a message it did not expect.
   """
   use PhoenixKitWeb, :live_component
@@ -73,15 +87,16 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKitBoards.{Access, Boards, Paths, Quick}
 
-  @default_limit 20
+  @default_limit 11
   @show_all_limit 500
   @default_poll 5_000
+  @all_actions [:empty, :text, :image]
   @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
   @image_max_bytes 25_000_000
   @note_max 2_000
 
   @doc """
-  Re-read the panel with the given `id` now. Call from the host LiveView, e.g.
+  Re-read the widget with the given `id` now. Call from the host LiveView, e.g.
   when it hears `{:boards_scope_changed, _}` (see the moduledoc).
   """
   @spec refresh(String.t(), pid()) :: :ok
@@ -93,7 +108,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   @impl true
   def update(%{refresh: true}, socket), do: {:ok, load(socket)}
 
-  # One chain of timers per panel: a tick clears the flag and re-arms, and a
+  # One chain of timers per widget: a tick clears the flag and re-arms, and a
   # host re-render in between finds it set and does not start a second chain.
   def update(%{tick: true}, socket) do
     {:ok, socket |> assign(:timer_armed?, false) |> load() |> arm_timer()}
@@ -121,10 +136,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:user_uuid, user_uuid)
     |> assign(:scope, assigns[:scope])
     |> assign(:label, assigns[:label])
+    |> assign(:show_label?, Map.get(assigns, :show_label, true))
     |> assign(:folder, assigns[:folder])
-    |> assign(:layout, assigns[:layout] || :list)
+    |> assign(:actions, actions(assigns[:actions]))
     |> assign(:limit, assigns[:limit] || @default_limit)
-    |> assign(:quick_capture, Map.get(assigns, :quick_capture, true))
     |> assign(:open, assigns[:open] || :navigate)
     |> assign(:return_to, Paths.local_path(assigns[:return_to]))
     |> assign(:poll, Map.get(assigns, :poll, @default_poll))
@@ -153,6 +168,15 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp user_uuid(%{uuid: uuid}) when is_binary(uuid), do: uuid
   defp user_uuid(_), do: nil
 
+  defp actions(nil), do: @all_actions
+
+  defp actions(list) when is_list(list) do
+    case Enum.filter(list, &(&1 in @all_actions)) do
+      [] -> @all_actions
+      valid -> Enum.uniq(valid)
+    end
+  end
+
   defp visibility_options(nil), do: ["private", "shared"]
 
   defp visibility_options(options) when is_list(options) do
@@ -177,12 +201,11 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp init_once(socket) do
     socket
     |> assign(:initialized?, true)
-    |> assign(:search, "")
     |> assign(:show_all?, false)
     |> assign(:renaming, nil)
     |> assign(:error, nil)
     |> assign(:note, "")
-    |> assign(:new_open?, false)
+    |> assign(:text_open?, false)
     |> assign(:visibility, socket.assigns.default_visibility)
     |> assign(:boards, [])
     |> assign(:total, 0)
@@ -206,14 +229,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp load(%{assigns: %{can_view?: true, user_uuid: uuid}} = socket) when is_binary(uuid) do
     limit = if socket.assigns.show_all?, do: @show_all_limit, else: socket.assigns.limit
-    opts = [limit: limit, search: socket.assigns.search]
 
     socket
-    |> assign(:boards, Boards.list_for_scope(socket.assigns.scope, uuid, opts))
-    |> assign(
-      :total,
-      Boards.count_for_scope(socket.assigns.scope, uuid, search: socket.assigns.search)
-    )
+    |> assign(:boards, Boards.list_for_scope(socket.assigns.scope, uuid, limit: limit))
+    |> assign(:total, Boards.count_for_scope(socket.assigns.scope, uuid))
   end
 
   defp load(socket), do: assign(socket, boards: [], total: 0)
@@ -233,18 +252,17 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   # ── Events ─────────────────────────────────────────────────────────────
 
   @impl true
-  def handle_event("create", %{"name" => name} = params, socket) do
+  # The big +: an empty canvas, opened.
+  def handle_event("create_empty", _params, socket) do
     case allow_create(socket) do
       :ok ->
-        attrs = %{
-          "name" => blank_to(name, "Untitled board"),
-          "created_by" => socket.assigns.user_uuid,
-          "visibility" => visibility_param(params, socket)
-        }
-
-        case Boards.create_board(with_scope(attrs, socket.assigns.scope), folder_opts(socket)) do
+        case Quick.create_empty(
+               socket.assigns.scope,
+               socket.assigns.user_uuid,
+               create_opts(socket)
+             ) do
           {:ok, board} -> {:noreply, after_create(socket, board)}
-          {:error, _changeset} -> {:noreply, fail(socket, "Could not create the board.")}
+          {:error, _reason} -> {:noreply, fail(socket, "Could not create the board.")}
         end
 
       {:error, message} ->
@@ -252,14 +270,28 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end
   end
 
-  def handle_event("quick_note", %{"note" => text} = params, socket) do
+  def handle_event("text_open", _params, socket),
+    do: {:noreply, assign(socket, :text_open?, true)}
+
+  def handle_event("text_cancel", _params, socket),
+    do: {:noreply, socket |> assign(:text_open?, false) |> assign(:note, "")}
+
+  def handle_event("quick_note", %{"note" => text}, socket) do
     case allow_create(socket) do
       :ok ->
-        opts = [visibility: visibility_param(params, socket)] ++ folder_opts(socket)
-
-        case Quick.create_note(socket.assigns.scope, socket.assigns.user_uuid, text, opts) do
+        case Quick.create_note(
+               socket.assigns.scope,
+               socket.assigns.user_uuid,
+               text,
+               create_opts(socket)
+             ) do
           {:ok, _board} ->
-            {:noreply, socket |> assign(:note, "") |> assign(:error, nil) |> load()}
+            {:noreply,
+             socket
+             |> assign(:note, "")
+             |> assign(:text_open?, false)
+             |> assign(:error, nil)
+             |> load()}
 
           {:error, :empty} ->
             {:noreply, fail(socket, "Write something first.")}
@@ -273,24 +305,19 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end
   end
 
-  def handle_event("note_changed", %{"note" => text} = params, socket) do
-    {:noreply,
-     socket
-     |> assign(:note, String.slice(text, 0, @note_max))
-     |> assign(:visibility, visibility_param(params, socket))}
+  def handle_event("note_changed", %{"note" => text}, socket),
+    do: {:noreply, assign(socket, :note, String.slice(text, 0, @note_max))}
+
+  def handle_event("set_visibility", %{"visibility" => visibility}, socket) do
+    if visibility in socket.assigns.visibility_options,
+      do: {:noreply, assign(socket, :visibility, visibility)},
+      else: {:noreply, socket}
   end
 
   def handle_event("validate_image", _params, socket), do: {:noreply, socket}
 
   def handle_event("cancel_image", %{"ref" => ref}, socket),
     do: {:noreply, cancel_upload(socket, :quick_image, ref)}
-
-  def handle_event("toggle_new", _params, socket),
-    do: {:noreply, update(socket, :new_open?, &(not &1))}
-
-  def handle_event("search", %{"q" => q}, socket) do
-    {:noreply, socket |> assign(:search, String.slice(q, 0, 100)) |> load()}
-  end
 
   def handle_event("show_all", _params, socket),
     do: {:noreply, socket |> assign(:show_all?, true) |> load()}
@@ -327,7 +354,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   def handle_event("unpin", %{"id" => id}, socket),
     do: act(socket, id, &Boards.unpin(&1, socket.assigns.user_uuid))
 
-  def handle_event("visibility", %{"id" => id, "to" => to}, socket) do
+  def handle_event("board_visibility", %{"id" => id, "to" => to}, socket) do
     if to in socket.assigns.visibility_options do
       act(socket, id, &Boards.set_visibility(&1, to, socket.assigns.user_uuid))
     else
@@ -352,21 +379,19 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # An upload finished: make the board. Heavy work in a progress callback, as on
-  # the board page — a pasted screenshot is small and the person is waiting.
+  # the board page — a photo is small and the person is waiting.
   defp handle_image_progress(:quick_image, %{done?: true} = entry, socket) do
     case allow_create(socket) do
       :ok ->
         result =
           consume_uploaded_entry(socket, entry, fn %{path: path} ->
-            opts = [visibility: socket.assigns.visibility] ++ folder_opts(socket)
-
             {:ok,
              Quick.create_image(
                socket.assigns.scope,
                socket.assigns.user_uuid,
                path,
                entry,
-               opts
+               create_opts(socket)
              )}
           end)
 
@@ -403,7 +428,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       else: {:error, :forbidden}
   end
 
-  # The board the browser named, only if it is in THIS panel's place and the
+  # The board the browser named, only if it is in THIS widget's place and the
   # user may see it. An id from anywhere else is as good as none.
   defp visible_board(%{assigns: %{can_view?: true} = assigns}, id) do
     case Boards.get_board(id) do
@@ -438,35 +463,19 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp fail(socket, message), do: assign(socket, :error, message)
 
   defp after_create(socket, board) do
-    socket = socket |> assign(:new_open?, false) |> assign(:error, nil) |> load()
+    socket = socket |> assign(:error, nil) |> load()
 
     if socket.assigns.open == :navigate,
       do: redirect(socket, to: Paths.user_board(board.uuid, socket.assigns.return_to)),
       else: socket
   end
 
-  defp with_scope(attrs, nil), do: attrs
-
-  defp with_scope(attrs, {type, id}),
-    do: Map.merge(attrs, %{"scope_type" => type, "scope_id" => id})
-
-  defp folder_opts(socket), do: [folder: socket.assigns.folder, label: socket.assigns.label]
-
-  defp visibility_param(params, socket) do
-    case params["visibility"] do
-      v when is_binary(v) ->
-        if v in socket.assigns.visibility_options, do: v, else: socket.assigns.default_visibility
-
-      _ ->
-        socket.assigns.visibility
-    end
-  end
-
-  defp blank_to(value, default) do
-    case value |> to_string() |> String.trim() do
-      "" -> default
-      name -> String.slice(name, 0, 200)
-    end
+  defp create_opts(socket) do
+    [
+      visibility: socket.assigns.visibility,
+      folder: socket.assigns.folder,
+      label: socket.assigns.label
+    ]
   end
 
   # ── Render ─────────────────────────────────────────────────────────────
@@ -495,27 +504,12 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   def render(assigns) do
     ~H"""
     <section id={@id} class={["space-y-3", @class]} data-boards-panel>
-      <header class="flex items-center justify-between gap-2">
-        <h3 class="font-medium text-base-content">
-          {@label || "Boards"}
-          <span :if={@total > 0} class="ml-1 text-xs font-normal text-base-content/50">{@total}</span>
-        </h3>
-        <button
-          :if={@can_create?}
-          type="button"
-          phx-click="toggle_new"
-          phx-target={@myself}
-          class="btn btn-primary btn-xs"
-        >
-          <.icon name="hero-plus" class="w-3.5 h-3.5" /> New board
-        </button>
-      </header>
+      <h3 :if={@label && @show_label?} class="text-sm font-medium text-base-content/70">
+        {@label}
+        <span :if={@total > 0} class="ml-1 text-xs font-normal text-base-content/50">{@total}</span>
+      </h3>
 
-      <div
-        :if={@error}
-        role="alert"
-        class="alert alert-error py-2 text-sm"
-      >
+      <div :if={@error} role="alert" class="alert alert-error py-2 text-sm">
         <span>{@error}</span>
         <button
           type="button"
@@ -527,112 +521,27 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         </button>
       </div>
 
-      <form
-        :if={@new_open? and @can_create?}
-        id={"#{@id}-new"}
-        phx-submit="create"
-        phx-target={@myself}
-        class="flex flex-wrap items-center gap-2"
-      >
-        <input
-          type="text"
-          name="name"
-          placeholder="Board name"
-          maxlength="200"
-          autofocus
-          class="input input-bordered input-sm flex-1 min-w-40"
-        />
-        <.visibility_select options={@visibility_options} selected={@visibility} />
-        <button type="submit" class="btn btn-primary btn-sm">Create</button>
-      </form>
-
-      <div :if={@quick_capture and @can_create?} class="space-y-2">
-        <form
-          id={"#{@id}-note"}
-          phx-change="note_changed"
-          phx-submit="quick_note"
-          phx-target={@myself}
-          class="space-y-2"
-        >
-          <textarea
-            name="note"
-            rows="2"
-            maxlength="2000"
-            placeholder="Jot a note…"
-            class="textarea textarea-bordered w-full text-sm"
-          >{@note}</textarea>
-          <div class="flex flex-wrap items-center gap-2">
-            <.visibility_select options={@visibility_options} selected={@visibility} />
-            <button type="submit" class="btn btn-sm btn-outline">
-              <.icon name="hero-bolt" class="w-4 h-4" /> Save as board
-            </button>
-          </div>
-        </form>
-
-        <form id={"#{@id}-image"} phx-change="validate_image" phx-target={@myself}>
-          <label
-            phx-drop-target={@uploads.quick_image.ref}
-            class="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-base-300 px-3 py-3 text-sm text-base-content/60 hover:bg-base-200/50"
-          >
-            <.icon name="hero-photo" class="w-4 h-4" />
-            <span>Drop an image here, or click to choose one</span>
-            <.live_file_input upload={@uploads.quick_image} class="hidden" />
-          </label>
-          <div
-            :for={entry <- @uploads.quick_image.entries}
-            class="mt-2 flex items-center gap-2 text-xs"
-          >
-            <progress class="progress progress-primary flex-1" value={entry.progress} max="100"></progress>
-            <span class="truncate max-w-40">{entry.client_name}</span>
-            <button
-              type="button"
-              phx-click="cancel_image"
-              phx-value-ref={entry.ref}
-              phx-target={@myself}
-              class="btn btn-ghost btn-xs"
-              aria-label="Cancel upload"
-            >
-              <.icon name="hero-x-mark" class="w-3.5 h-3.5" />
-            </button>
-            <span :for={err <- upload_errors(@uploads.quick_image, entry)} class="text-error">
-              {upload_error_text(err)}
-            </span>
-          </div>
-          <p :for={err <- upload_errors(@uploads.quick_image)} class="mt-1 text-xs text-error">
-            {upload_error_text(err)}
-          </p>
-        </form>
+      <%!-- Nothing yet: the new-board tile alone, centred and larger. --%>
+      <div :if={@boards == [] and @can_create?} class="mx-auto w-full max-w-xs">
+        <.new_tile {assigns} big={true} />
       </div>
 
-      <form
-        :if={@total > 8 or @search != ""}
-        id={"#{@id}-search"}
-        phx-change="search"
-        phx-submit="search"
-        phx-target={@myself}
-      >
-        <input
-          type="search"
-          name="q"
-          value={@search}
-          placeholder="Search boards"
-          phx-debounce="250"
-          class="input input-bordered input-sm w-full"
-        />
-      </form>
-
       <p
-        :if={@boards == [] and @search == ""}
+        :if={@boards == [] and not @can_create?}
         class="rounded-lg border border-dashed border-base-300 p-6 text-center text-sm text-base-content/60"
       >
-        <.icon name="hero-rectangle-group" class="mx-auto mb-1 block w-6 h-6 text-base-content/40" />
         No boards here yet.
       </p>
-      <p :if={@boards == [] and @search != ""} class="text-sm text-base-content/60">
-        No boards match “{@search}”.
-      </p>
 
-      <.board_list :if={@boards != []} {assigns} />
+      <ul
+        :if={@boards != []}
+        class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-3"
+      >
+        <.board_tile :for={board <- @boards} {assigns} board={board} />
+        <li :if={@can_create?} class="contents">
+          <.new_tile {assigns} big={false} />
+        </li>
+      </ul>
 
       <button
         :if={@total > length(@boards) and not @show_all?}
@@ -647,110 +556,194 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     """
   end
 
-  # ── Layouts ────────────────────────────────────────────────────────────
+  # ── The new-board tile ─────────────────────────────────────────────────
 
-  defp board_list(%{layout: :grid} = assigns) do
+  defp new_tile(%{text_open?: true} = assigns) do
     ~H"""
-    <ul class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <li
-        :for={board <- @boards}
-        id={"#{@id}-#{board.uuid}"}
-        class="card bg-base-100 border border-base-300 shadow-sm"
-      >
-        <.board_open board={board} open={@open} return_to={@return_to}>
-          <div class="h-24 w-full overflow-hidden rounded-t-lg bg-base-200">
-            <img
-              :if={board.preview && board.preview["image_url"]}
-              src={board.preview["image_url"]}
-              loading="lazy"
-              alt=""
-              class="h-full w-full object-cover"
-            />
-            <p
-              :if={board.preview && !board.preview["image_url"] && board.preview["text"]}
-              class="line-clamp-3 whitespace-pre-line p-3 text-sm text-base-content/70"
-            >
-              {board.preview["text"]}
-            </p>
-            <div
-              :if={is_nil(board.preview) or (!board.preview["image_url"] and !board.preview["text"])}
-              class="flex h-full items-center justify-center text-base-content/30"
-            >
-              <.icon name="hero-rectangle-group" class="w-8 h-8" />
-            </div>
-          </div>
-        </.board_open>
-        <div class="card-body gap-1 p-3">
-          <.board_title {assigns} board={board} />
-          <p class="text-xs text-base-content/50">
-            <.time_ago datetime={board.updated_at} class="text-xs" />
-          </p>
-        </div>
-      </li>
-    </ul>
-    """
-  end
-
-  defp board_list(%{layout: :compact} = assigns) do
-    ~H"""
-    <ul class="space-y-0.5">
-      <li
-        :for={board <- @boards}
-        id={"#{@id}-#{board.uuid}"}
-        class="flex items-center gap-1.5 text-sm"
-      >
-        <.board_flags board={board} user_uuid={@user_uuid} />
-        <.board_open
-          board={board}
-          open={@open}
-          return_to={@return_to}
-          class="truncate hover:underline"
+    <form
+      id={"#{@id}-note"}
+      phx-change="note_changed"
+      phx-submit="quick_note"
+      phx-target={@myself}
+      class="flex aspect-square flex-col gap-2 rounded-xl border border-primary/40 bg-base-100 p-2"
+    >
+      <textarea
+        name="note"
+        maxlength="2000"
+        placeholder="Jot a note…"
+        autofocus
+        class="textarea textarea-ghost min-h-0 w-full flex-1 resize-none p-1 text-sm leading-snug focus:border-transparent focus:outline-none"
+      >{@note}</textarea>
+      <div class="flex items-center justify-end gap-1">
+        <button
+          type="button"
+          phx-click="text_cancel"
+          phx-target={@myself}
+          class="btn btn-ghost btn-xs"
         >
-          {board.name}
-        </.board_open>
-      </li>
-    </ul>
+          Cancel
+        </button>
+        <button type="submit" class="btn btn-primary btn-xs">Save</button>
+      </div>
+    </form>
     """
   end
 
-  defp board_list(assigns) do
+  defp new_tile(assigns) do
     ~H"""
-    <ul class="divide-y divide-base-300 rounded-lg border border-base-300">
-      <li
-        :for={board <- @boards}
-        id={"#{@id}-#{board.uuid}"}
-        class="flex items-center gap-3 px-3 py-2"
+    <div
+      id={"#{@id}-new"}
+      phx-drop-target={if :image in @actions, do: @uploads.quick_image.ref}
+      class="flex aspect-square flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-base-300 p-3 text-base-content/60 transition-colors hover:border-primary/50"
+    >
+      <button
+        :if={:empty in @actions}
+        type="button"
+        phx-click="create_empty"
+        phx-target={@myself}
+        aria-label="New empty board"
+        class={[
+          "btn btn-circle btn-primary shadow-sm",
+          if(@big, do: "h-20 w-20", else: "h-12 w-12")
+        ]}
       >
-        <div class="min-w-0 flex-1">
-          <.board_title {assigns} board={board} />
-          <p
-            :if={board.preview && board.preview["text"] && @renaming != board.uuid}
-            class="truncate text-xs text-base-content/60"
+        <.icon name="hero-plus" class={if(@big, do: "h-10 w-10", else: "h-6 w-6")} />
+      </button>
+
+      <div
+        :if={length(@actions -- [:empty]) > 0}
+        class="flex flex-wrap items-center justify-center gap-1.5"
+      >
+        <button
+          :if={:text in @actions}
+          type="button"
+          phx-click="text_open"
+          phx-target={@myself}
+          title="Start with a note"
+          aria-label="Start with a note"
+          class={["btn btn-sm btn-outline", if(@big, do: "gap-1", else: "btn-circle")]}
+        >
+          <.icon name="hero-pencil-square" class="h-4 w-4" />
+          <span :if={@big}>Text</span>
+        </button>
+
+        <form
+          :if={:image in @actions}
+          id={"#{@id}-image"}
+          phx-change="validate_image"
+          phx-target={@myself}
+        >
+          <label
+            title="Start with an image"
+            aria-label="Start with an image"
+            class={[
+              "btn btn-sm btn-outline cursor-pointer",
+              if(@big, do: "gap-1", else: "btn-circle")
+            ]}
           >
-            {board.preview["text"]}
-          </p>
-        </div>
+            <.icon name="hero-camera" class="h-4 w-4" />
+            <span :if={@big}>Image</span>
+            <.live_file_input upload={@uploads.quick_image} class="hidden" />
+          </label>
+        </form>
+      </div>
+
+      <form
+        :if={length(@visibility_options) > 1}
+        id={"#{@id}-visibility"}
+        phx-change="set_visibility"
+        phx-target={@myself}
+      >
+        <select
+          name="visibility"
+          aria-label="Who can see the board"
+          class="select select-ghost select-xs h-6 min-h-0 text-xs text-base-content/60"
+        >
+          <option :for={o <- @visibility_options} value={o} selected={o == @visibility}>
+            {visibility_label(o)}
+          </option>
+        </select>
+      </form>
+
+      <div :for={entry <- @uploads.quick_image.entries} class="flex w-full items-center gap-1 text-xs">
+        <progress class="progress progress-primary flex-1" value={entry.progress} max="100"></progress>
+        <button
+          type="button"
+          phx-click="cancel_image"
+          phx-value-ref={entry.ref}
+          phx-target={@myself}
+          class="btn btn-ghost btn-xs btn-circle"
+          aria-label="Cancel upload"
+        >
+          <.icon name="hero-x-mark" class="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <p :for={err <- upload_errors(@uploads.quick_image)} class="text-xs text-error">
+        {upload_error_text(err)}
+      </p>
+    </div>
+    """
+  end
+
+  # ── A board's tile ─────────────────────────────────────────────────────
+
+  defp board_tile(assigns) do
+    assigns =
+      assigns
+      |> assign(:creator?, assigns.board.created_by == assigns.user_uuid)
+      |> assign(:manage?, assigns.board.created_by == assigns.user_uuid or assigns.admin?)
+      |> assign(:href, Paths.user_board(assigns.board.uuid, assigns.return_to))
+      |> assign(:blank?, blank_preview?(assigns.board.preview))
+
+    ~H"""
+    <li
+      id={"#{@id}-#{@board.uuid}"}
+      class="group relative flex aspect-square flex-col overflow-hidden rounded-xl border border-base-300 bg-base-100 shadow-sm transition-shadow hover:shadow-md"
+    >
+      <a
+        href={@href}
+        target={if @open == :new_tab, do: "_blank"}
+        rel={if @open == :new_tab, do: "noopener"}
+        class="relative min-h-0 flex-1 overflow-hidden bg-base-200"
+        tabindex="-1"
+        aria-hidden="true"
+      >
         <img
-          :if={board.preview && board.preview["image_url"]}
-          src={board.preview["image_url"]}
+          :if={@board.preview && @board.preview["image_url"]}
+          src={@board.preview["image_url"]}
           loading="lazy"
           alt=""
-          class="h-9 w-12 shrink-0 rounded object-cover"
+          class="h-full w-full object-cover"
         />
-        <span class="hidden shrink-0 text-base-content/50 sm:inline">
-          <.time_ago datetime={board.updated_at} class="text-xs" />
-        </span>
-        <.board_menu {assigns} board={board} />
-      </li>
-    </ul>
+        <p
+          :if={@board.preview && !@board.preview["image_url"] && @board.preview["text"]}
+          class="line-clamp-4 whitespace-pre-line p-3 text-sm leading-snug text-base-content/75"
+        >
+          {@board.preview["text"]}
+        </p>
+        <%!-- A soft edge where a long note is cut off, rather than half a line. --%>
+        <div
+          :if={@board.preview && !@board.preview["image_url"] && @board.preview["text"]}
+          class="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-base-200 to-transparent"
+        >
+        </div>
+        <div :if={@blank?} class="flex h-full items-center justify-center text-base-content/25">
+          <.icon name="hero-rectangle-group" class="h-9 w-9" />
+        </div>
+      </a>
+
+      <div class="flex min-h-9 items-center gap-1 px-2 py-1.5">
+        <.tile_title {assigns} />
+      </div>
+
+      <.tile_menu {assigns} />
+    </li>
     """
   end
 
-  # The name (or its rename form) with the flags in front, and — for the grid —
-  # the menu beside it.
-  defp board_title(%{renaming: renaming, board: %{uuid: renaming}} = assigns) do
+  defp tile_title(%{renaming: renaming, board: %{uuid: renaming}} = assigns) do
     ~H"""
-    <form phx-submit="rename_save" phx-target={@myself} class="flex items-center gap-1">
+    <form phx-submit="rename_save" phx-target={@myself} class="flex w-full items-center gap-1">
       <input type="hidden" name="board_id" value={@board.uuid} />
       <input
         type="text"
@@ -761,119 +754,53 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         phx-key="Escape"
         phx-keydown="rename_cancel"
         phx-target={@myself}
-        class="input input-bordered input-xs flex-1"
+        class="input input-bordered input-xs min-w-0 flex-1"
       />
-      <button type="submit" class="btn btn-primary btn-xs">Save</button>
-      <button
-        type="button"
-        phx-click="rename_cancel"
-        phx-target={@myself}
-        class="btn btn-ghost btn-xs"
-      >
-        Cancel
+      <button type="submit" class="btn btn-primary btn-xs px-2" aria-label="Save name">
+        <.icon name="hero-check" class="h-3.5 w-3.5" />
       </button>
     </form>
     """
   end
 
-  defp board_title(%{layout: :grid} = assigns) do
-    ~H"""
-    <div class="flex items-center gap-1.5">
-      <.board_flags board={@board} user_uuid={@user_uuid} />
-      <.board_open
-        board={@board}
-        open={@open}
-        return_to={@return_to}
-        class="min-w-0 flex-1 truncate font-medium hover:underline"
-      >
-        {@board.name}
-      </.board_open>
-      <.board_menu {assigns} />
-    </div>
-    """
-  end
-
-  defp board_title(assigns) do
-    ~H"""
-    <div class="flex items-center gap-1.5">
-      <.board_flags board={@board} user_uuid={@user_uuid} />
-      <.board_open
-        board={@board}
-        open={@open}
-        return_to={@return_to}
-        class="truncate font-medium hover:underline"
-      >
-        {@board.name}
-      </.board_open>
-    </div>
-    """
-  end
-
-  attr(:board, :any, required: true)
-  attr(:user_uuid, :string, default: nil)
-
-  defp board_flags(assigns) do
+  defp tile_title(assigns) do
     ~H"""
     <.icon
       :if={@board.pinned_at}
       name="hero-bookmark-solid"
-      class="w-3.5 h-3.5 shrink-0 text-warning"
+      class="h-3.5 w-3.5 shrink-0 text-warning"
     />
     <.icon
       :if={@board.visibility == "private"}
       name="hero-lock-closed"
-      class="w-3.5 h-3.5 shrink-0 text-base-content/50"
+      class="h-3.5 w-3.5 shrink-0 text-base-content/50"
     />
-    <.icon
-      :if={@board.kind == "quick"}
-      name="hero-bolt"
-      class="w-3.5 h-3.5 shrink-0 text-base-content/40"
-    />
-    """
-  end
-
-  attr(:board, :any, required: true)
-  attr(:open, :atom, required: true)
-  attr(:return_to, :string, default: nil)
-  attr(:class, :string, default: nil)
-  slot(:inner_block, required: true)
-
-  # A plain link either way. The board page lives in PhoenixKit's own
-  # live_session and the page holding the panel almost never does, so a
-  # `navigate` would be refused by LiveView (and logged) and fall back to a
-  # full page load anyway.
-  defp board_open(assigns) do
-    ~H"""
     <a
-      href={Paths.user_board(@board.uuid, @return_to)}
+      href={@href}
       target={if @open == :new_tab, do: "_blank"}
       rel={if @open == :new_tab, do: "noopener"}
-      class={@class}
+      class="min-w-0 flex-1 truncate text-sm font-medium hover:underline"
+      title={@board.name}
     >
-      {render_slot(@inner_block)}
+      {@board.name}
     </a>
     """
   end
 
-  defp board_menu(assigns) do
-    assigns =
-      assigns
-      |> assign(:creator?, assigns.board.created_by == assigns.user_uuid)
-      |> assign(:manage?, assigns.board.created_by == assigns.user_uuid or assigns.admin?)
-
+  defp tile_menu(assigns) do
     ~H"""
-    <div class="dropdown dropdown-end shrink-0">
+    <div class="dropdown dropdown-end absolute right-1 top-1 z-10">
       <button
         type="button"
         tabindex="0"
-        class="btn btn-ghost btn-xs btn-circle"
+        class="btn btn-circle btn-xs border-0 bg-base-100/80 opacity-70 shadow-sm backdrop-blur group-hover:opacity-100 focus:opacity-100"
         aria-label={"Actions for #{@board.name}"}
       >
-        <.icon name="hero-ellipsis-horizontal" class="w-4 h-4" />
+        <.icon name="hero-ellipsis-horizontal" class="h-4 w-4" />
       </button>
       <ul
         tabindex="0"
-        class="dropdown-content menu menu-sm z-10 w-48 rounded-box border border-base-300 bg-base-100 p-1 shadow"
+        class="dropdown-content menu menu-sm z-20 w-48 rounded-box border border-base-300 bg-base-100 p-1 shadow"
       >
         <li :if={@manage?}>
           <button
@@ -882,7 +809,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             phx-value-id={@board.uuid}
             phx-target={@myself}
           >
-            <.icon name="hero-pencil" class="w-4 h-4" /> Rename
+            <.icon name="hero-pencil" class="h-4 w-4" /> Rename
           </button>
         </li>
         <li>
@@ -893,7 +820,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             phx-value-id={@board.uuid}
             phx-target={@myself}
           >
-            <.icon name="hero-bookmark" class="w-4 h-4" /> Pin to top
+            <.icon name="hero-bookmark" class="h-4 w-4" /> Pin to front
           </button>
           <button
             :if={@board.pinned_at}
@@ -902,34 +829,34 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             phx-value-id={@board.uuid}
             phx-target={@myself}
           >
-            <.icon name="hero-bookmark-slash" class="w-4 h-4" /> Unpin
+            <.icon name="hero-bookmark-slash" class="h-4 w-4" /> Unpin
           </button>
         </li>
         <li :if={@creator? and length(@visibility_options) == 2 and @board.visibility == "shared"}>
           <button
             type="button"
-            phx-click="visibility"
+            phx-click="board_visibility"
             phx-value-id={@board.uuid}
             phx-value-to="private"
             phx-target={@myself}
           >
-            <.icon name="hero-lock-closed" class="w-4 h-4" /> Make private
+            <.icon name="hero-lock-closed" class="h-4 w-4" /> Make private
           </button>
         </li>
         <li :if={@creator? and length(@visibility_options) == 2 and @board.visibility == "private"}>
           <button
             type="button"
-            phx-click="visibility"
+            phx-click="board_visibility"
             phx-value-id={@board.uuid}
             phx-value-to="shared"
             phx-target={@myself}
           >
-            <.icon name="hero-user-group" class="w-4 h-4" /> Share with everyone here
+            <.icon name="hero-user-group" class="h-4 w-4" /> Share with everyone here
           </button>
         </li>
         <li :if={@creator?}>
           <button type="button" phx-click="archive" phx-value-id={@board.uuid} phx-target={@myself}>
-            <.icon name="hero-archive-box" class="w-4 h-4" /> Archive
+            <.icon name="hero-archive-box" class="h-4 w-4" /> Archive
           </button>
         </li>
         <li :if={@manage?}>
@@ -941,7 +868,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             data-confirm="Delete this board? Its files move to the media trash."
             class="text-error"
           >
-            <.icon name="hero-trash" class="w-4 h-4" /> Delete
+            <.icon name="hero-trash" class="h-4 w-4" /> Delete
           </button>
         </li>
       </ul>
@@ -949,36 +876,14 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     """
   end
 
-  attr(:options, :list, required: true)
-  attr(:selected, :string, required: true)
-
-  defp visibility_select(%{options: [_single]} = assigns) do
-    ~H"""
-    <input type="hidden" name="visibility" value={@selected} />
-    <span
-      :if={@selected == "private"}
-      class="inline-flex items-center gap-1 text-xs text-base-content/60"
-    >
-      <.icon name="hero-lock-closed" class="w-3.5 h-3.5" /> Only me
-    </span>
-    """
-  end
-
-  defp visibility_select(assigns) do
-    ~H"""
-    <select name="visibility" class="select select-bordered select-sm" aria-label="Who can see it">
-      <option :for={option <- @options} value={option} selected={option == @selected}>
-        {visibility_label(option)}
-      </option>
-    </select>
-    """
-  end
+  defp blank_preview?(nil), do: true
+  defp blank_preview?(preview), do: !preview["image_url"] and !preview["text"]
 
   defp visibility_label("private"), do: "Only me"
   defp visibility_label("shared"), do: "Everyone here"
 
   defp upload_error_text(:too_large), do: "That file is too large."
-  defp upload_error_text(:not_accepted), do: "Only images can be dropped here."
+  defp upload_error_text(:not_accepted), do: "Only images can be added here."
   defp upload_error_text(:too_many_files), do: "One image at a time."
   defp upload_error_text(_), do: "That upload failed."
 end
