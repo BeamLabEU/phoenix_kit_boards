@@ -22,7 +22,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
-  alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
+  alias PhoenixKitBoards.{Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
   alias PhoenixKitBoards.Web.RuntimeHooks
 
@@ -187,7 +187,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     canvas = Boards.load_canvas(board)
     annotations = Boards.annotations(canvas)
 
-    case hoist_embedded_images(annotations, socket) do
+    case hoist_embedded_images(annotations, board, socket) do
       {_annotations, []} ->
         {board, canvas}
 
@@ -249,7 +249,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
     with {:ok, user_uuid} <- require_user(user_uuid),
          {:ok, checksum} <- file_checksum(path),
-         {:ok, file} <- store(path, user_uuid, checksum, entry),
+         {:ok, file} <- store(path, user_uuid, checksum, entry, socket.assigns.board),
          url when is_binary(url) <- Storage.get_public_url(file) do
       {:ok, url}
     else
@@ -271,7 +271,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # stored with `file_type: "image"` — which broke them everywhere the media
   # page trusts that column (broken thumbnail tiles, invisible to the
   # video/audio filters, image variant processing run against a .mov).
-  defp store(path, user_uuid, checksum, entry) do
+  defp store(path, user_uuid, checksum, entry, board) do
     path
     |> Storage.store_file_in_buckets(
       file_type_for(entry),
@@ -280,15 +280,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       ext_for(entry),
       entry.client_name
     )
-    |> normalize_stored()
+    |> Uploads.file(board, user_uuid)
   end
-
-  # `store_file_in_buckets/6` answers `{:ok, file, :duplicate}` when it
-  # recognises the bytes. Same file either way, so flatten to `{:ok, file}`
-  # rather than let the 3-tuple fall through as a failure and send the client
-  # back to embedding the image it just uploaded successfully.
-  defp normalize_stored({:ok, file, _dedupe}), do: {:ok, file}
-  defp normalize_stored(other), do: other
 
   # The extension decides how the stored object is named and served, and the
   # filename is the unreliable half of an entry — a clipboard paste is not
@@ -360,9 +353,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   #
   # Failure here is not fatal: the shape keeps its data URL and the board
   # stays heavy, which is where it already was.
-  defp hoist_embedded_images(annotations, socket) do
+  defp hoist_embedded_images(annotations, board, socket) do
     if Enum.any?(annotations, &embedded_image?/1) do
-      Enum.map_reduce(annotations, [], &hoist_one(&1, &2, socket))
+      Enum.map_reduce(annotations, [], &hoist_one(&1, &2, board, socket))
     else
       # The overwhelmingly common case: nothing embedded, so this costs one
       # pass over the list and no work at all.
@@ -370,8 +363,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  defp hoist_one(shape, done, socket) do
-    case hoist_shape(shape, socket) do
+  defp hoist_one(shape, done, board, socket) do
+    case hoist_shape(shape, board, socket) do
       {:ok, rewritten} -> {rewritten, [rewritten | done]}
       :error -> {shape, done}
     end
@@ -511,8 +504,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     })
   end
 
-  defp hoist_shape(%{"geometry" => %{"href" => "data:" <> _ = href} = geom} = shape, socket) do
-    case store_data_url(href, socket) do
+  defp hoist_shape(
+         %{"geometry" => %{"href" => "data:" <> _ = href} = geom} = shape,
+         board,
+         socket
+       ) do
+    case store_data_url(href, board, socket) do
       {:ok, url} ->
         {:ok, Map.put(shape, "geometry", Map.put(geom, "href", url))}
 
@@ -525,9 +522,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  defp hoist_shape(_shape, _socket), do: :error
+  defp hoist_shape(_shape, _board, _socket), do: :error
 
-  defp store_data_url(href, socket) do
+  defp store_data_url(href, board, socket) do
     with {:ok, bytes, ext} <- decode_data_url(href),
          {:ok, user_uuid} <- require_user(uploader_uuid(socket)) do
       # A name only for the extension and for what the file is called in the
@@ -544,7 +541,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       try do
         with :ok <- File.write(path, bytes),
              {:ok, checksum} <- file_checksum(path),
-             {:ok, file} <- store(path, user_uuid, checksum, entry),
+             {:ok, file} <- store(path, user_uuid, checksum, entry, board),
              url when is_binary(url) <- Storage.get_public_url(file) do
           {:ok, url}
         else
@@ -686,7 +683,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       # every collaborator wait on the disk.
       # Any image still carrying its bytes goes to storage first, so what is
       # broadcast, stored and re-sent from here on is a URL.
-      {annotations, hoisted} = hoist_embedded_images(incoming, socket)
+      {annotations, hoisted} = hoist_embedded_images(incoming, socket.assigns.board, socket)
 
       broadcast(socket.assigns.topic, {:board_annotations, annotations, self()})
 
