@@ -67,16 +67,17 @@ defmodule PhoenixKitBoards.Quick do
           {:ok, PhoenixKitBoards.Board.t()} | {:error, term()}
   def create_image(scope, user_uuid, path, entry, opts \\ []) do
     with {:ok, board} <- create(scope, user_uuid, image_name(entry), opts) do
-      case store_and_place(path, user_uuid, entry, board) do
-        {:ok, shape} ->
-          case put_shapes(board, [shape]) do
-            {:ok, _canvas, board} -> {:ok, board}
-            {:error, _} = error -> discard(board, error)
-          end
-
-        {:error, _} = error ->
-          discard(board, error)
+      case fill_with_image(board, path, user_uuid, entry) do
+        {:ok, board} -> {:ok, board}
+        {:error, _} = error -> discard(board, error)
       end
+    end
+  end
+
+  defp fill_with_image(board, path, user_uuid, entry) do
+    with {:ok, shape} <- store_and_place(path, user_uuid, entry, board),
+         {:ok, _canvas, board} <- put_shapes(board, [shape]) do
+      {:ok, board}
     end
   end
 

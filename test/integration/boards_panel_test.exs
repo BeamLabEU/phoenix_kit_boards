@@ -4,8 +4,10 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
-  alias PhoenixKitBoards.{Boards, Quick}
+  alias PhoenixKit.Modules.Storage.{Folder, ResourceFolders}
+  alias PhoenixKitBoards.{Boards, MediaFolders, Quick}
   alias PhoenixKitBoards.Test.HostLive
+  alias PhoenixKitBoards.Web.BoardsPanel
 
   @endpoint PhoenixKitBoards.Test.Endpoint
   @scope {"project", "panel"}
@@ -221,8 +223,8 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       [board] = Boards.list_for_scope(@scope, me.uuid)
 
-      assert PhoenixKitBoards.Test.Repo.get!(
-               PhoenixKit.Modules.Storage.Folder,
+      assert Repo.get!(
+               Folder,
                board.folder_parent_uuid
              ).name == "Files"
     end
@@ -283,13 +285,13 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert board.preview["count"] == 1
 
       # The file is in the board's own folder, under the place's, not loose.
-      folder = PhoenixKitBoards.MediaFolders.board_folder(board)
+      folder = MediaFolders.board_folder(board)
       assert folder.name == "My Screenshot"
-      assert [file] = PhoenixKit.Modules.Storage.ResourceFolders.list_files(folder.uuid)
+      assert [file] = ResourceFolders.list_files(folder.uuid)
       assert file.folder_uuid == folder.uuid
 
-      assert PhoenixKitBoards.Test.Repo.get!(
-               PhoenixKit.Modules.Storage.Folder,
+      assert Repo.get!(
+               Folder,
                folder.parent_uuid
              ).name == "Panel Co"
 
@@ -450,7 +452,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       refute html =~ "Appears later"
 
       board!(other, "Appears later")
-      PhoenixKitBoards.Web.BoardsPanel.refresh("panel", lv.pid)
+      BoardsPanel.refresh("panel", lv.pid)
       assert render(lv) =~ "Appears later"
     end
 

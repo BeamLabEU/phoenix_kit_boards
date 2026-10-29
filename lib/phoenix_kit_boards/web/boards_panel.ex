@@ -234,41 +234,42 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   @impl true
   def handle_event("create", %{"name" => name} = params, socket) do
-    with :ok <- allow_create(socket) do
-      attrs = %{
-        "name" => blank_to(name, "Untitled board"),
-        "created_by" => socket.assigns.user_uuid,
-        "visibility" => visibility_param(params, socket)
-      }
+    case allow_create(socket) do
+      :ok ->
+        attrs = %{
+          "name" => blank_to(name, "Untitled board"),
+          "created_by" => socket.assigns.user_uuid,
+          "visibility" => visibility_param(params, socket)
+        }
 
-      case Boards.create_board(with_scope(attrs, socket.assigns.scope), folder_opts(socket)) do
-        {:ok, board} ->
-          {:noreply, after_create(socket, board)}
+        case Boards.create_board(with_scope(attrs, socket.assigns.scope), folder_opts(socket)) do
+          {:ok, board} -> {:noreply, after_create(socket, board)}
+          {:error, _changeset} -> {:noreply, fail(socket, "Could not create the board.")}
+        end
 
-        {:error, _changeset} ->
-          {:noreply, fail(socket, "Could not create the board.")}
-      end
-    else
-      {:error, message} -> {:noreply, fail(socket, message)}
+      {:error, message} ->
+        {:noreply, fail(socket, message)}
     end
   end
 
   def handle_event("quick_note", %{"note" => text} = params, socket) do
-    with :ok <- allow_create(socket) do
-      opts = [visibility: visibility_param(params, socket)] ++ folder_opts(socket)
+    case allow_create(socket) do
+      :ok ->
+        opts = [visibility: visibility_param(params, socket)] ++ folder_opts(socket)
 
-      case Quick.create_note(socket.assigns.scope, socket.assigns.user_uuid, text, opts) do
-        {:ok, _board} ->
-          {:noreply, socket |> assign(:note, "") |> assign(:error, nil) |> load()}
+        case Quick.create_note(socket.assigns.scope, socket.assigns.user_uuid, text, opts) do
+          {:ok, _board} ->
+            {:noreply, socket |> assign(:note, "") |> assign(:error, nil) |> load()}
 
-        {:error, :empty} ->
-          {:noreply, fail(socket, "Write something first.")}
+          {:error, :empty} ->
+            {:noreply, fail(socket, "Write something first.")}
 
-        {:error, _reason} ->
-          {:noreply, fail(socket, "Could not save the note.")}
-      end
-    else
-      {:error, message} -> {:noreply, fail(socket, message)}
+          {:error, _reason} ->
+            {:noreply, fail(socket, "Could not save the note.")}
+        end
+
+      {:error, message} ->
+        {:noreply, fail(socket, message)}
     end
   end
 

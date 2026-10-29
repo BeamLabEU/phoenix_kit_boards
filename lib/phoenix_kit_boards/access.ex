@@ -67,8 +67,8 @@ defmodule PhoenixKitBoards.Access do
   end
 
   @doc "Whether the session holds the `\"boards\"` admin permission."
-  @spec admin?(Scope.t() | nil) :: boolean()
-  def admin?(%Scope{} = scope), do: Scope.can?(scope, "boards")
+  @spec admin?(term()) :: boolean()
+  def admin?(scope) when is_struct(scope, Scope), do: Scope.can?(scope, "boards")
   def admin?(_), do: false
 
   defp user_uuid(%{uuid: uuid}) when is_binary(uuid), do: uuid

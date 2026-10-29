@@ -206,15 +206,16 @@ defmodule PhoenixKitBoards.MediaFolders do
   # ── The default layout: Boards / <place> ───────────────────────────
 
   defp default_parent(scope, label, actor) do
-    with {:ok, boards_uuid} <- module_folder(actor) do
-      case scope do
-        nil -> boards_uuid
-        {type, id} -> scope_folder(type, id, label, boards_uuid, actor)
-      end
-    else
+    case module_folder(actor) do
+      {:ok, boards_uuid} -> default_parent_in(scope, label, boards_uuid, actor)
       _ -> nil
     end
   end
+
+  defp default_parent_in(nil, _label, boards_uuid, _actor), do: boards_uuid
+
+  defp default_parent_in({type, id}, label, boards_uuid, actor),
+    do: scope_folder(type, id, label, boards_uuid, actor)
 
   @doc """
   The `Boards` folder at the root of the media library, created on first use
@@ -263,11 +264,16 @@ defmodule PhoenixKitBoards.MediaFolders do
 
       nil ->
         locked(boards_uuid, name, fn ->
-          case media_folder(Settings.get_setting(key)) do
-            %Folder{uuid: uuid} -> uuid
-            nil -> create_scope_folder(key, name, type, id, boards_uuid, actor)
-          end
+          remembered_or_new(key, name, type, id, boards_uuid, actor)
         end)
+    end
+  end
+
+  # Read again under the lock: whoever held it may have made the folder.
+  defp remembered_or_new(key, name, type, id, boards_uuid, actor) do
+    case media_folder(Settings.get_setting(key)) do
+      %Folder{uuid: uuid} -> uuid
+      nil -> create_scope_folder(key, name, type, id, boards_uuid, actor)
     end
   end
 
@@ -414,7 +420,6 @@ defmodule PhoenixKitBoards.MediaFolders do
       %Folder{} = folder ->
         case Storage.trash_folder(folder) do
           {:ok, _} -> :ok
-          :ok -> :ok
           {:error, reason} -> {:error, reason}
         end
     end
