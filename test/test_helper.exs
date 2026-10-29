@@ -16,6 +16,12 @@ repo_available =
     {:ok, _} = TestRepo.start_link()
     {:ok, _} = Phoenix.PubSub.Supervisor.start_link(name: PhoenixKit.PubSub)
 
+    # Settings reads go through core's cache and announce changes on its internal
+    # PubSub; without them every setting access logs two warnings.
+    {:ok, _} = PhoenixKit.Cache.Registry.start_link()
+    {:ok, _} = PhoenixKit.PubSub.Manager.start_link([])
+    {:ok, _} = PhoenixKit.Cache.start_link(name: :settings)
+
     # `start_link/0` connects lazily; ask a question so a missing database
     # fails here and not in every test.
     TestRepo.query!("SELECT 1")

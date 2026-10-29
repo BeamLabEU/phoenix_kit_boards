@@ -8,7 +8,7 @@ defmodule PhoenixKitBoards.Boards do
   """
   import Ecto.Query
 
-  alias PhoenixKitBoards.Board
+  alias PhoenixKitBoards.{Board, MediaFolders}
 
   # Virtual extent of a blank board. Panning is infinite (the `infinite_canvas`
   # attr on `<Fresco.canvas>`); this just gives shapes a coordinate space and
@@ -117,13 +117,57 @@ defmodule PhoenixKitBoards.Boards do
     Ecto.Query.CastError -> nil
   end
 
-  @doc "Create a board with a fresh blank canvas persisted into `data`."
-  def create_board(attrs \\ %{}) do
-    data = canvas_to_map(blank_canvas())
+  @doc """
+  Create a board with a fresh blank canvas persisted into `data`.
 
-    %Board{}
-    |> Board.changeset(Map.put(normalize(attrs), "data", data))
-    |> repo().insert()
+  A board may be given a place (`"scope_type"` + `"scope_id"`), a `"visibility"`
+  and a `"kind"`; see `PhoenixKitBoards.Board`.
+
+  ## Options
+
+    * `:folder` — where the board's own media folder will go, see
+      `PhoenixKitBoards.MediaFolders` (`{:under, uuid}`, `{:path, names}`,
+      `:root`, a function, or `nil` for the host's hook / the default layout)
+    * `:label` — the human name of the board's place, used to name its folder
+
+  The parent folder is decided here and remembered on the board; the board's
+  own folder is only created by its first upload. Folder trouble never stops
+  a board being created.
+  """
+  @spec create_board(map(), keyword()) :: {:ok, Board.t()} | {:error, Ecto.Changeset.t()}
+  def create_board(attrs \\ %{}, opts \\ []) do
+    data = canvas_to_map(blank_canvas())
+    attrs = attrs |> normalize() |> Map.put("data", data)
+    changeset = Board.changeset(%Board{}, attrs)
+
+    changeset =
+      if changeset.valid? do
+        parent =
+          MediaFolders.resolve_parent(
+            Keyword.get(opts, :folder),
+            scope_from(changeset),
+            Keyword.get(opts, :label),
+            Ecto.Changeset.get_field(changeset, :created_by)
+          )
+
+        Ecto.Changeset.put_change(
+          changeset,
+          :folder_parent_uuid,
+          MediaFolders.to_stored_parent(parent)
+        )
+      else
+        changeset
+      end
+
+    repo().insert(changeset)
+  end
+
+  defp scope_from(changeset) do
+    case {Ecto.Changeset.get_field(changeset, :scope_type),
+          Ecto.Changeset.get_field(changeset, :scope_id)} do
+      {type, id} when is_binary(type) and is_binary(id) -> {type, id}
+      _ -> nil
+    end
   end
 
   @doc """
@@ -182,8 +226,25 @@ defmodule PhoenixKitBoards.Boards do
     |> repo().update()
   end
 
-  @doc "Delete a board."
-  def delete_board(%Board{} = board), do: repo().delete(board)
+  @doc """
+  Delete a board and move its media folder to the trash. The folder is
+  trashed after the row is gone and best effort: a failure is logged, never
+  returned, because the board is deleted either way. Files are not deleted.
+  """
+  def delete_board(%Board{} = board) do
+    with {:ok, deleted} <- repo().delete(board) do
+      case MediaFolders.trash_folder(board) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          require Logger
+          Logger.warning("[boards] could not trash a deleted board's folder: #{inspect(reason)}")
+      end
+
+      {:ok, deleted}
+    end
+  end
 
   # ── Canvas load / save ────────────────────────────────────────────────────
 
