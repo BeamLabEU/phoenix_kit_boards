@@ -26,7 +26,8 @@ the module).
 
 ## What you get
 
-- **Boards list** at `/admin/boards` — create / open / delete.
+- **Boards list** at `/admin/boards` — create / open / delete (all boards,
+  whoever they belong to).
 - **A board** at `/admin/boards/:id` — the collaborative canvas.
 - **Real-time collaboration** — shapes/text/images sync across everyone on the
   board; a presence roster and live cursors show who's there.
@@ -39,6 +40,98 @@ the module).
   previewed simply stays on the canvas as text.
 - **DB-backed** — the `Fresco.Canvas` document is stored in the `data` jsonb
   column.
+- **Boards that belong somewhere** — a board can belong to a *place* (a project,
+  a contact, a page…), be private to its creator or shared with everyone who can
+  see that place, and keep its files in a media folder of its own. See
+  "Boards in your own pages" below.
+- **A drop-in panel** — `PhoenixKitBoards.Web.Components.boards_panel/1` lists a
+  place's boards and lets people create one, or save a note or a dropped image
+  as a board in one step.
+
+## Boards in your own pages
+
+```heex
+<PhoenixKitBoards.Web.Components.boards_panel
+  id="project-boards"
+  scope={{"project", @project.uuid}}
+  label={@project.name}
+  current_user={@current_scope.user}
+  return_to={~p"/projects/#{@project}"}
+/>
+```
+
+`scope` is `{type, id}` — any pair of strings, so it names a record
+(`{"project", uuid}`) or something that is not one (`{"page", "/docs/setup"}`).
+The panel shows the boards of that place the signed-in user may see: everyone's
+**shared** boards and their own **private** ones. It has a *New board* button and
+a quick-capture box (type a note, or drop an image, and it becomes a board
+without opening the editor). Each row can be renamed, pinned, made private or
+shared, archived or deleted. Layouts: `:list`, `:grid`, `:compact`. Every
+attribute is in the `PhoenixKitBoards.Web.BoardsPanel` moduledoc.
+
+Boards opened from the panel open at `/dashboard/boards/:id` (so people who are
+not admins can open them) and link back to `return_to`.
+
+### Who may see a place
+
+The module cannot know what "can see project X" means in your app, so it asks:
+
+```elixir
+config :phoenix_kit_boards, :authorize, {MyApp.Boards, :can?}
+
+# MyApp.Boards
+def can?(action, user, {"project", id}) when action in [:view, :create],
+  do: MyApp.Projects.member?(id, user)
+```
+
+With no hook any signed-in user may view and create. A hook that raises, exits or
+answers anything but a boolean **denies**. The hook can narrow access, never
+widen it: **private is always its creator's** (users holding the `boards` admin
+permission may still open any board, as they always could on `/admin/boards`).
+The panel renders nothing for a place the user may not view.
+
+### Where a board's files go
+
+Every upload on a board is filed in that board's own media folder, created on its
+first upload, so boards in different places never mix their files in the media
+root. By default: `Boards / <place> / <board>`. Change it per panel:
+
+```heex
+<%!-- inside that folder --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:under, @project.files_folder_uuid}} />
+
+<%!-- that chain of folders from the media root, created as needed --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:path, ["Clients", "Acme"]}} />
+
+<%!-- the media root itself --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={:root} />
+```
+
+or for the whole app, with the same hook convention the other modules use:
+
+```elixir
+config :phoenix_kit_boards,
+  attachments_parent_folder: {MyApp.Media, :board_parent},   # fun(:board, actor_uuid, %{scope:, label:})
+  attachments_folder_name: {MyApp.Media, :board_name}        # fun(board, actor_uuid)
+```
+
+Deleting a board moves its folder to the media trash; files are never deleted.
+
+### Staying current
+
+The panel re-reads itself every few seconds (`poll`, in milliseconds; `0` turns it
+off), which needs nothing from your page. For instant updates, subscribe your
+LiveView to the place and forward the message:
+
+```elixir
+# mount/3, when connected?
+PhoenixKitBoards.Boards.subscribe_scope({"project", project.uuid})
+
+def handle_info({:boards_scope_changed, _board_uuid}, socket) do
+  PhoenixKitBoards.Web.BoardsPanel.refresh("project-boards")
+  {:noreply, socket}
+end
+```
 
 ## How it works
 
