@@ -107,8 +107,16 @@ defmodule PhoenixKitBoards.MixProject do
       # stroke appear rather than waiting out the length of it. Guarded by
       # `typeof` like the drag APIs above, and pinned for the same reason —
       # an older etcher loses it without saying so.
-      pk_dep(:fresco, ">= 0.13.1 and < 1.0.0"),
-      pk_dep(:etcher, "~> 0.18"),
+      #
+      # fresco 0.15 and etcher 0.23 are the current floors: the releases core
+      # 3.0 itself requires (`~> 0.15.0` / `~> 0.23.0`), so a host can never
+      # resolve anything older next to it, and the board gets what came with
+      # them — the selection frame that scales and turns a group or a drawn
+      # stroke, a text box worked on while it is typed into, live size
+      # samples beside the panel's thickness and size controls, and the
+      # caret placed where a double-click lands.
+      pk_dep(:fresco, ">= 0.15.0 and < 1.0.0"),
+      pk_dep(:etcher, "~> 0.23"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). open_fresco emits SVG by itself and
