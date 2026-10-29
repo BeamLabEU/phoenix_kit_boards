@@ -22,7 +22,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
-  alias PhoenixKitBoards.{Boards, LinkPreview, Paths, Uploads}
+  alias PhoenixKitBoards.{Access, Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
   alias PhoenixKitBoards.Web.RuntimeHooks
 
@@ -91,7 +91,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
   @impl true
-  def mount(%{"id" => id}, _session, socket) do
+  def mount(%{"id" => id} = params, _session, socket) do
+    # Where the back arrow goes. Admins come from the boards list; a signed-in
+    # user comes from the page that embedded the panel, which it says in
+    # `return_to` — validated, since a query parameter is anyone's to write.
+    socket = assign(socket, :back_to, back_to(socket.assigns[:live_action], params))
+
     # LiveView mounts twice — once for the HTTP render, once on WebSocket
     # connect — so anything done unconditionally here runs twice. The
     # disconnected pass is pure waste on this page: #board-root is
@@ -111,69 +116,105 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp mount_connected(id, socket) do
     case Boards.get_board(id) do
       nil ->
-        {:ok,
-         socket
-         |> put_flash(:error, "Board not found.")
-         |> push_navigate(to: Paths.boards())}
+        not_found(socket)
 
       board ->
-        {board, canvas} = migrate_embedded_images(board, socket)
-        me = identity(socket)
-        topic = topic(board.uuid)
-
-        PubSubHelper.subscribe(topic)
-        broadcast(topic, {:board_join, me, self()})
-
-        {:ok,
-         socket
-         |> assign(:page_title, board.name)
-         |> assign(:board, board)
-         |> assign(:canvas, canvas)
-         # The canvas the TEMPLATE draws, assigned once and never again.
-         #
-         # `@canvas` carries the annotations, and `Fresco.canvas` writes them
-         # into `data-extensions` as JSON — so re-rendering it costs an encode
-         # and a diff of the whole board, and sends the result down the socket.
-         # On a board of any size that is enormous (5 MB on the demo board),
-         # and it happened on every edit, from either end.
-         #
-         # All of it was waste: `#board-root` is `phx-update="ignore"`, so the
-         # client discards the markup and takes its updates from `board:apply`
-         # instead. What it cost was real, though — the encode blocked the
-         # process while cursor messages queued behind it, which is what made
-         # remote cursors choppy and seconds late, and a frame that size per
-         # edit is enough to drop the socket and remount the peer.
-         #
-         # Separating the two assigns leaves change tracking with nothing to
-         # do: this one never changes, so the canvas subtree is rendered at
-         # mount and skipped forever after, while `@canvas` stays current for
-         # persistence without ever reaching the template.
-         |> assign(:initial_canvas, canvas)
-         |> assign(:annotations, Boards.annotations(canvas))
-         # When each shape this client has not vouched for got here. See
-         # `@peer_grace_ms`.
-         #
-         # Seeded with the whole board, because a client that has just
-         # arrived has vouched for nothing. A reconnect is the case that
-         # matters: the LiveView process dies with the socket and a new one
-         # starts here with no memory, while the browser still holds the board
-         # as it was before the line dropped — and pushes it. Every shape
-         # stored while that client was away is missing from what it sends,
-         # and without this every one of them would read as a delete.
-         |> assign(:peer_arrivals, arrivals_now(Boards.annotations(canvas)))
-         |> assign(:tools, @tools)
-         |> assign(:topic, topic)
-         |> assign(:me, me)
-         |> allow_upload(:board_image,
-           accept: upload_accept(),
-           max_entries: 1,
-           max_file_size: @image_max_bytes,
-           auto_upload: true,
-           progress: &handle_image_progress/3
-         )
-         # Deliberately nothing pushed here. See `handle_event("board:ready")`.
-         |> assign(:peers, %{})}
+        if may_open?(board, socket),
+          do: open_board(board, socket),
+          else: not_found(socket)
     end
+  end
+
+  # The admin route is already behind the admin gate and the `boards`
+  # permission, as it has always been. The user route is where a board's own
+  # rules apply: private is its creator's, and the host decides the place.
+  defp may_open?(board, socket) do
+    case socket.assigns[:live_action] do
+      :user ->
+        Access.can_open?(
+          board,
+          socket.assigns[:phoenix_kit_current_user],
+          socket.assigns[:phoenix_kit_current_scope]
+        )
+
+      _ ->
+        true
+    end
+  end
+
+  # One answer for "there is no such board" and "you may not see it": telling
+  # them apart would confirm that someone's private board exists.
+  defp not_found(socket) do
+    {:ok,
+     socket
+     |> put_flash(:error, "Board not found.")
+     |> push_navigate(to: socket.assigns.back_to)}
+  end
+
+  # The site root, not `/dashboard`: whether the host has a user dashboard at
+  # all is its choice (this module only borrows its route table), and a back
+  # arrow into a 404 is worse than one into the home page.
+  defp back_to(:user, params), do: Paths.local_path(params["return_to"]) || "/"
+
+  defp back_to(_action, _params), do: Paths.boards()
+
+  defp open_board(board, socket) do
+    {board, canvas} = migrate_embedded_images(board, socket)
+    me = identity(socket)
+    topic = topic(board.uuid)
+
+    PubSubHelper.subscribe(topic)
+    broadcast(topic, {:board_join, me, self()})
+
+    {:ok,
+     socket
+     |> assign(:page_title, board.name)
+     |> assign(:board, board)
+     |> assign(:canvas, canvas)
+     # The canvas the TEMPLATE draws, assigned once and never again.
+     #
+     # `@canvas` carries the annotations, and `Fresco.canvas` writes them
+     # into `data-extensions` as JSON — so re-rendering it costs an encode
+     # and a diff of the whole board, and sends the result down the socket.
+     # On a board of any size that is enormous (5 MB on the demo board),
+     # and it happened on every edit, from either end.
+     #
+     # All of it was waste: `#board-root` is `phx-update="ignore"`, so the
+     # client discards the markup and takes its updates from `board:apply`
+     # instead. What it cost was real, though — the encode blocked the
+     # process while cursor messages queued behind it, which is what made
+     # remote cursors choppy and seconds late, and a frame that size per
+     # edit is enough to drop the socket and remount the peer.
+     #
+     # Separating the two assigns leaves change tracking with nothing to
+     # do: this one never changes, so the canvas subtree is rendered at
+     # mount and skipped forever after, while `@canvas` stays current for
+     # persistence without ever reaching the template.
+     |> assign(:initial_canvas, canvas)
+     |> assign(:annotations, Boards.annotations(canvas))
+     # When each shape this client has not vouched for got here. See
+     # `@peer_grace_ms`.
+     #
+     # Seeded with the whole board, because a client that has just
+     # arrived has vouched for nothing. A reconnect is the case that
+     # matters: the LiveView process dies with the socket and a new one
+     # starts here with no memory, while the browser still holds the board
+     # as it was before the line dropped — and pushes it. Every shape
+     # stored while that client was away is missing from what it sends,
+     # and without this every one of them would read as a delete.
+     |> assign(:peer_arrivals, arrivals_now(Boards.annotations(canvas)))
+     |> assign(:tools, @tools)
+     |> assign(:topic, topic)
+     |> assign(:me, me)
+     |> allow_upload(:board_image,
+       accept: upload_accept(),
+       max_entries: 1,
+       max_file_size: @image_max_bytes,
+       auto_upload: true,
+       progress: &handle_image_progress/3
+     )
+     # Deliberately nothing pushed here. See `handle_event("board:ready")`.
+     |> assign(:peers, %{})}
   end
 
   # Boards written before images were uploaded — or while an upload was
@@ -1137,7 +1178,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]">
       <header class="flex items-center gap-3 shrink-0">
         <.link
-          navigate={Paths.boards()}
+          navigate={@back_to}
           class="btn btn-ghost btn-sm btn-circle"
           aria-label="Back to boards"
         >

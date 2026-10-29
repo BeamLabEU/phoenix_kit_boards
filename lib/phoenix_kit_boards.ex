@@ -104,6 +104,30 @@ defmodule PhoenixKitBoards do
   end
 
   @impl PhoenixKit.Module
+  @doc """
+  The board page for signed-in users who are not admins — the people who meet a
+  `PhoenixKitBoards.Web.BoardsPanel` on a page of the host app and open a board
+  from it. Hidden from the dashboard menu (`visible: false`): it exists only so
+  core generates the route, `/dashboard/boards/:id`, inside the authenticated
+  live_session with the user layout.
+
+  Whether a given user may open a given board is decided by
+  `PhoenixKitBoards.Access`, not by the route.
+  """
+  def user_dashboard_tabs do
+    [
+      %Tab{
+        id: :user_board,
+        label: "Board",
+        path: "/dashboard/boards/:id",
+        level: :user,
+        visible: false,
+        live_view: {PhoenixKitBoards.Web.BoardLive, :user}
+      }
+    ]
+  end
+
+  @impl PhoenixKit.Module
   @doc "Multi-page routing (list + individual board) — see `PhoenixKitBoards.Routes`."
   def route_module, do: PhoenixKitBoards.Routes
 
