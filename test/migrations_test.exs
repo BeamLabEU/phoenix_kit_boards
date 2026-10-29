@@ -5,7 +5,7 @@ defmodule PhoenixKitBoards.MigrationsTest do
 
   describe "current_version/0" do
     test "matches the highest version the coordinator can apply" do
-      assert Migrations.current_version() == 1
+      assert Migrations.current_version() == 2
     end
   end
 

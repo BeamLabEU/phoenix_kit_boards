@@ -19,6 +19,11 @@ defmodule PhoenixKitBoards.Migrations do
 
     * `0` — table absent (not installed)
     * `1` — `phoenix_kit_boards` table present, UUIDv7 primary key
+    * `2` — where a board belongs and who sees it: `scope_type`/`scope_id`,
+      `visibility`, `kind`, the board's media folder (`folder_uuid`,
+      `folder_parent_uuid`), a list-card `preview`, `pinned_at`, `archived_at`.
+      Every column is nullable or defaulted, so existing boards become
+      unscoped and shared — their behaviour does not change.
   """
 
   use Ecto.Migration
@@ -26,7 +31,7 @@ defmodule PhoenixKitBoards.Migrations do
   alias PhoenixKit.Migrations.Postgres.Helpers
 
   @initial_version 1
-  @current_version 1
+  @current_version 2
   @default_prefix "public"
   @version_table "phoenix_kit_boards"
 
@@ -135,12 +140,64 @@ defmodule PhoenixKitBoards.Migrations do
     drop_if_exists(table(:phoenix_kit_boards, prefix: prefix))
   end
 
+  # ── v2 ────────────────────────────────────────────────────────────────────
+
+  # Raw `IF NOT EXISTS` / `IF EXISTS` so a re-run (the stamp can be lost, see
+  # `read_version/2`) is a no-op rather than an error.
+  @v2_columns [
+    {"scope_type", "varchar(64)"},
+    {"scope_id", "varchar(255)"},
+    {"visibility", "varchar(16) NOT NULL DEFAULT 'shared'"},
+    {"kind", "varchar(16) NOT NULL DEFAULT 'canvas'"},
+    {"folder_uuid", "uuid"},
+    {"folder_parent_uuid", "uuid"},
+    {"preview", "jsonb"},
+    {"pinned_at", "timestamp without time zone"},
+    {"archived_at", "timestamp without time zone"}
+  ]
+
+  defp up_v2(prefix) do
+    table = Helpers.qualify_table(@version_table, prefix)
+
+    for {column, type} <- @v2_columns do
+      execute("ALTER TABLE #{table} ADD COLUMN IF NOT EXISTS #{column} #{type}")
+    end
+
+    create_if_not_exists(
+      index(:phoenix_kit_boards, [:scope_type, :scope_id, {:desc, :updated_at}],
+        prefix: prefix,
+        name: :phoenix_kit_boards_scope_index
+      )
+    )
+
+    create_if_not_exists(
+      index(:phoenix_kit_boards, [:created_by],
+        prefix: prefix,
+        name: :phoenix_kit_boards_created_by_index
+      )
+    )
+  end
+
+  defp down_v2(prefix) do
+    table = Helpers.qualify_table(@version_table, prefix)
+
+    drop_if_exists(
+      index(:phoenix_kit_boards, [], prefix: prefix, name: :phoenix_kit_boards_scope_index)
+    )
+
+    drop_if_exists(
+      index(:phoenix_kit_boards, [], prefix: prefix, name: :phoenix_kit_boards_created_by_index)
+    )
+
+    for {column, _type} <- Enum.reverse(@v2_columns) do
+      execute("ALTER TABLE #{table} DROP COLUMN IF EXISTS #{column}")
+    end
+  end
+
   # ── internals ─────────────────────────────────────────────────────────────
 
   defp change(range, direction, opts) do
-    Enum.each(range, fn
-      1 -> apply_step(direction, opts.prefix)
-    end)
+    Enum.each(range, &apply_step(&1, direction, opts.prefix))
 
     case direction do
       :up -> record_version(opts, Enum.max(range))
@@ -148,8 +205,10 @@ defmodule PhoenixKitBoards.Migrations do
     end
   end
 
-  defp apply_step(:up, prefix), do: up_v1(prefix)
-  defp apply_step(:down, prefix), do: down_v1(prefix)
+  defp apply_step(1, :up, prefix), do: up_v1(prefix)
+  defp apply_step(1, :down, prefix), do: down_v1(prefix)
+  defp apply_step(2, :up, prefix), do: up_v2(prefix)
+  defp apply_step(2, :down, prefix), do: down_v2(prefix)
 
   defp record_version(_opts, 0), do: :ok
 
@@ -239,10 +298,14 @@ defmodule PhoenixKitBoards.Migrations do
   def parse_version_comment(_), do: :unstamped
 
   # Match the table against the shape of each known version, newest first.
-  # V1 is identified by its UUIDv7 primary key — the column the pre-release
-  # `bigserial :id` schema lacks.
+  # V2 is identified by its `visibility` column; V1 by its UUIDv7 primary key
+  # — the column the pre-release `bigserial :id` schema lacks.
   defp infer_version(repo, escaped_prefix) do
-    if column_exists?(repo, escaped_prefix, "uuid"), do: 1, else: :incompatible
+    cond do
+      column_exists?(repo, escaped_prefix, "visibility") -> 2
+      column_exists?(repo, escaped_prefix, "uuid") -> 1
+      true -> :incompatible
+    end
   end
 
   defp column_exists?(repo, escaped_prefix, column) do

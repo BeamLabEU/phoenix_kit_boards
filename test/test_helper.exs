@@ -19,14 +19,16 @@ repo_available =
     # `start_link/0` connects lazily; ask a question so a missing database
     # fails here and not in every test.
     TestRepo.query!("SELECT 1")
+
+    # Cleared BEFORE core's chain runs: a leftover row with a later version
+    # makes Ecto warn about every core migration that sorts before it.
+    boards_version = 9_000_000_000_000_001
+    TestRepo.query!("DELETE FROM schema_migrations WHERE version = $1", [boards_version])
     PhoenixKit.Migration.ensure_current(TestRepo, log: false)
 
     # Re-run every time (the row is cleared first): `up/1` is idempotent through
     # its own version stamp, and a tracked `:already_up` would never pick up a
     # newer version of the chain. The version sorts after core's timestamps.
-    boards_version = 9_000_000_000_000_001
-    TestRepo.query!("DELETE FROM schema_migrations WHERE version = $1", [boards_version])
-
     Ecto.Migrator.up(TestRepo, boards_version, PhoenixKitBoards.Test.MigrateBoards, log: false)
 
     Ecto.Adapters.SQL.Sandbox.mode(TestRepo, :manual)
