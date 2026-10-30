@@ -175,10 +175,15 @@ All real-time traffic for a board rides one PubSub topic:
 | `{:board_leave, peer_id}` | A viewer disconnected (sent from `terminate/2`) |
 | `{:board_cursor, id, x, y, meta, from}` | A pointer moved, in **canvas** coordinates |
 | `{:board_media, uuid, action, position, from}` | Shared playback (play/pause/seek) |
+| `:board_access_changed` | Recheck access after visibility changes or deletion (no sender to exclude) |
 
 Cursors, in-flight drags and in-progress strokes (`"drawing"` / `"drawn"`, keyed by sender, ghosts that no edit replaces — the client retires one on `drawn` or after `GHOST_TTL_MS` of silence) also have an optional ephemeral channel
 (`BoardSocket` / `BoardChannel`) so they do not queue behind LiveView work.
 The LiveView path is the fallback when the host has not mounted the socket.
+Channel tokens include the issuing LiveView PID; the channel monitors it and
+closes when that authorized page ends. A remount's token replaces the old
+connection. User board pages recheck access before durable events, received
+annotations and deferred image storage, and every five seconds while idle.
 
 **Echo suppression is server-side**, via `when from == self()` guards on each
 `handle_info/2` clause. Editing re-emits the *entire* annotation list
@@ -231,8 +236,10 @@ time anything on the board changes.
   back through the image path above.
 
 **The unfurl fetches a URL a user pasted, from inside the server's network.**
-`LinkPreview.safe_uri/1` is the whole defence, and *every* hop of *both*
-fetchers (page and hero image) must go through it — which means Req's
+The shared URI validation behind `LinkPreview.safe_uri/1` is the defence, and
+*every* hop of *both* fetchers (page and hero image) must go through it. Requests
+connect to the validated IP, keeping the original HTTP Host and TLS hostname
+so DNS cannot change the destination after validation. This means Req's
 automatic redirect following stays off (`redirect: false`) and redirects are
 walked by hand. A fetcher that lets Req follow a `Location` checks the first
 address and then goes wherever it is told. The body cap is likewise enforced

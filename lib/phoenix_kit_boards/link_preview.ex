@@ -46,14 +46,10 @@ defmodule PhoenixKitBoards.LinkPreview do
   HTML only. A link preview is a nicety, and none of it is worth a hung
   request or a page of arbitrary size buffered into memory.
 
-  ## Known limit
-
-  The guard resolves the host and then asks `Req` for the same host by name,
-  so a DNS answer that changes between the two — rebinding — is not caught.
-  Closing that means pinning the checked address and carrying the original
-  host through as a header and SNI name, which is a lot of machinery for a
-  surface only an admin can reach. It is a deliberate omission, not an
-  oversight.
+  Requests connect to a checked IP address and keep the original hostname in
+  the HTTP Host header and TLS verification/SNI. DNS is never consulted again
+  between the address check and the connection, including on redirects and
+  hero-image fetches. This matters on user boards as well as admin boards.
   """
 
   require Logger
@@ -179,17 +175,21 @@ defmodule PhoenixKitBoards.LinkPreview do
     do: {:error, :too_many_redirects}
 
   defp walk(url, redirects_left, opts) do
-    with {:ok, uri} <- safe_uri(url),
+    with {:ok, uri, address} <- resolve_uri(url),
          {:ok, timeout} <- time_left(opts.deadline) do
+      connection =
+        uri
+        |> connection_options(address)
+        |> Keyword.update!(:headers, &(Keyword.get(opts.req_opts, :headers, []) ++ &1))
+
       req =
         Req.new(
           [
-            url: URI.to_string(uri),
             redirect: false,
             receive_timeout: timeout,
             max_retries: 0,
             into: capped_into()
-          ] ++ opts.req_opts
+          ] ++ Keyword.merge(opts.req_opts, connection)
         )
 
       req |> Req.get() |> dispatch(uri, redirects_left, opts)
@@ -281,6 +281,10 @@ defmodule PhoenixKitBoards.LinkPreview do
 
   @doc false
   def safe_uri(url) do
+    with {:ok, uri, _address} <- resolve_uri(url), do: {:ok, uri}
+  end
+
+  defp resolve_uri(url) do
     uri = URI.parse(url)
 
     cond do
@@ -297,11 +301,30 @@ defmodule PhoenixKitBoards.LinkPreview do
         # public and one private address would otherwise slip through.
         if Enum.any?(addrs, &private_address?/1),
           do: {:error, {:blocked_address, uri.host}},
-          else: {:ok, uri}
+          else: {:ok, uri, hd(addrs)}
 
       {:error, reason} ->
         {:error, {:dns, reason}}
     end
+  end
+
+  @doc false
+  def connection_options(uri, address) do
+    # Mint's hostname overrides TLS SNI and certificate verification while
+    # Finch connects to the literal URL address. The Host header must carry
+    # the original authority, including a nonstandard port.
+    host =
+      if uri.port == URI.default_port(uri.scheme),
+        do: uri.host,
+        else: "#{uri.host}:#{uri.port}"
+
+    address = address |> :inet.ntoa() |> to_string()
+
+    [
+      url: URI.to_string(%{uri | host: address}),
+      connect_options: [hostname: uri.host],
+      headers: [{"host", host}]
+    ]
   end
 
   @doc false

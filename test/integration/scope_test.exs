@@ -47,6 +47,18 @@ defmodule PhoenixKitBoards.Integration.ScopeTest do
   end
 
   describe "list_for_scope/3" do
+    test "metadata-only reads keep previews without loading the canvas" do
+      user = user_fixture()
+      {:ok, board} = PhoenixKitBoards.Quick.create_note(@scope, user.uuid, "Preview only")
+
+      assert [listed] = Boards.list_for_scope(@scope, user.uuid, include_data: false)
+      assert listed.data == %{}
+      assert listed.preview["text"] == "Preview only"
+      assert Boards.get_board(board.uuid, include_data: false).data == %{}
+      assert Boards.get_board(board.uuid).data == board.data
+      assert hd(Boards.list_for_scope(@scope, user.uuid)).data == board.data
+    end
+
     test "lists only the place's boards" do
       u = user_fixture()
       board!(u, "here")

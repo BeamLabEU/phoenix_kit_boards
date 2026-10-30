@@ -129,11 +129,8 @@ defmodule PhoenixKitBoards.MixProject do
       pk_dep(:etcher, "~> 0.23"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
-      # draw the card (open_fresco). open_fresco emits SVG by itself and
-      # needs a rasterizer for PNG — the HOST supplies that, either the
-      # `{:resvg, "~> 0.5"}` NIF or a resvg / rsvg-convert / magick binary on
-      # PATH. Without one an unfurl fails and a pasted link stays text, so
-      # this is a soft requirement rather than a dependency here.
+      # draw the card (open_fresco). Cards are emitted as SVG and rasterized
+      # by the browser, so the host needs no NIF or rasterizer executable.
       {:req, "~> 0.5"},
       {:floki, ">= 0.34.0"},
       pk_dep(:open_fresco, "~> 0.2"),

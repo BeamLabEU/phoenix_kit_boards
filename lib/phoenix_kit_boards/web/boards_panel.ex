@@ -129,7 +129,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp assign_config(socket, assigns) do
     user = assigns[:current_user]
-    previous = {socket.assigns[:user_uuid], socket.assigns[:scope]}
+    previous = {socket.assigns[:user_uuid], socket.assigns[:scope], socket.assigns[:scope_ok?]}
     user_uuid = user_uuid(user)
     {scope, scope_ok?} = scope_of(assigns[:scope])
 
@@ -138,6 +138,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:user, user)
     |> assign(:user_uuid, user_uuid)
     |> assign(:scope, scope)
+    |> assign(:scope_ok?, scope_ok?)
     |> assign(:label, assigns[:label])
     |> assign(:show_label?, Map.get(assigns, :show_label, true))
     |> assign(:folder, assigns[:folder])
@@ -149,21 +150,46 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:class, assigns[:class])
     |> assign(:visibility_options, visibility_options(assigns[:visibility_options]))
     |> assign(:default_visibility, default_visibility(assigns))
-    |> assign_access(user, scope_ok?, previous != {user_uuid, scope})
+    |> assign(:admin?, admin?(user))
+    |> reset_context(previous != {user_uuid, scope, scope_ok?})
+    |> constrain_visibility()
   end
 
-  # What the host allows and whether this user is an admin is looked up once per
-  # user, not on every refresh: the second reads roles and permissions.
-  defp assign_access(socket, user, scope_ok?, true = _changed) do
+  # Access may change while the widget stays mounted, even for the same user
+  # and place. Refresh it before listing and check it again before mutations.
+  defp assign_access(socket) do
     scope = socket.assigns.scope
+    user = socket.assigns.user
+    valid? = socket.assigns.scope_ok?
 
     socket
-    |> assign(:can_view?, scope_ok? and Access.can?(:view, user, scope))
-    |> assign(:can_create?, scope_ok? and Access.can?(:create, user, scope))
-    |> assign(:admin?, admin?(user))
+    |> assign(:can_view?, valid? and Access.can?(:view, user, scope))
+    |> assign(:can_create?, valid? and Access.can?(:create, user, scope))
   end
 
-  defp assign_access(socket, _user, _scope_ok?, false), do: socket
+  defp reset_context(%{assigns: %{initialized?: true}} = socket, true) do
+    socket =
+      Enum.reduce(socket.assigns.uploads.quick_image.entries, socket, fn entry, acc ->
+        cancel_upload(acc, :quick_image, entry.ref)
+      end)
+
+    assign(socket,
+      show_all?: false,
+      renaming: nil,
+      error: nil,
+      note: "",
+      text_open?: false,
+      visibility: socket.assigns.default_visibility
+    )
+  end
+
+  defp reset_context(socket, _changed), do: socket
+
+  defp constrain_visibility(socket) do
+    if socket.assigns[:visibility] in socket.assigns.visibility_options,
+      do: socket,
+      else: assign(socket, :visibility, socket.assigns.default_visibility)
+  end
 
   # A place the host named badly (no id, say) shows nothing at all — it must
   # not fall back to the boards that belong nowhere.
@@ -239,15 +265,21 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end)
   end
 
-  defp load(%{assigns: %{can_view?: true, user_uuid: uuid}} = socket) when is_binary(uuid) do
+  defp load(socket), do: socket |> assign_access() |> load_boards()
+
+  defp load_boards(%{assigns: %{can_view?: true, user_uuid: uuid}} = socket)
+       when is_binary(uuid) do
     limit = if socket.assigns.show_all?, do: @show_all_limit, else: socket.assigns.limit
 
     socket
-    |> assign(:boards, Boards.list_for_scope(socket.assigns.scope, uuid, limit: limit))
+    |> assign(
+      :boards,
+      Boards.list_for_scope(socket.assigns.scope, uuid, limit: limit, include_data: false)
+    )
     |> assign(:total, Boards.count_for_scope(socket.assigns.scope, uuid))
   end
 
-  defp load(socket), do: assign(socket, boards: [], total: 0)
+  defp load_boards(socket), do: assign(socket, boards: [], total: 0)
 
   # Only once connected: the disconnected render has no process to deliver to.
   defp arm_timer(%{assigns: %{poll: ms}} = socket) when is_integer(ms) and ms > 0 do
@@ -427,35 +459,36 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   # ── Checks ─────────────────────────────────────────────────────────────
 
-  defp allow_create(%{assigns: %{can_create?: true, user_uuid: uuid}}) when is_binary(uuid),
-    do: :ok
+  defp allow_create(socket) do
+    assigns = socket.assigns
 
-  defp allow_create(_socket), do: {:error, "You cannot add boards here."}
+    if assigns.scope_ok? and Access.can?(:view, assigns.user, assigns.scope) and
+         Access.can?(:create, assigns.user, assigns.scope),
+       do: :ok,
+       else: {:error, "You cannot add boards here."}
+  end
 
   # The creator, or an admin. Sharing and archiving are narrower (the creator
   # only) and enforced by the context, which does not know about admins.
   defp allow_manage(socket, board) do
-    if board.created_by == socket.assigns.user_uuid or socket.assigns.admin?,
+    if board.created_by == socket.assigns.user_uuid or admin?(socket.assigns.user),
       do: :ok,
       else: {:error, :forbidden}
   end
 
   # The board the browser named, only if it is in THIS widget's place and the
   # user may see it. An id from anywhere else is as good as none.
-  defp visible_board(%{assigns: %{can_view?: true} = assigns}, id) do
-    case Boards.get_board(id) do
-      nil ->
-        {:error, :gone}
-
-      board ->
-        if Boards.scope_of(board) == assigns.scope and
-             Boards.visible_to?(board, assigns.user_uuid),
-           do: {:ok, board},
-           else: {:error, :gone}
+  defp visible_board(%{assigns: assigns}, id) do
+    with true <- assigns.scope_ok? and Access.can?(:view, assigns.user, assigns.scope),
+         board when not is_nil(board) <- Boards.get_board(id, include_data: false) do
+      if Boards.scope_of(board) == assigns.scope and
+           Boards.visible_to?(board, assigns.user_uuid),
+         do: {:ok, board},
+         else: {:error, :gone}
+    else
+      _ -> {:error, :gone}
     end
   end
-
-  defp visible_board(_socket, _id), do: {:error, :gone}
 
   defp act(socket, id, fun) do
     with {:ok, board} <- visible_board(socket, id),
@@ -766,7 +799,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         phx-key="Escape"
         phx-keydown="rename_cancel"
         phx-target={@myself}
-        class="input input-bordered input-xs min-w-0 flex-1"
+        class="input input-xs min-w-0 flex-1"
       />
       <button type="submit" class="btn btn-primary btn-xs px-2" aria-label="Save name">
         <.icon name="hero-check" class="h-3.5 w-3.5" />

@@ -39,7 +39,11 @@ defmodule PhoenixKitBoards.Web.BoardChannel do
     # valid token would open any board, which on a private board is the whole
     # of the access control.
     if peer.board == board_uuid do
-      {:ok, socket}
+      # A token must not outlive the authorized board page. In particular,
+      # making a board private redirects its former viewers and closes their
+      # ephemeral channels too. Monitoring works across cluster nodes.
+      ref = Process.monitor(peer.live_view)
+      {:ok, assign(socket, :live_view_monitor, ref)}
     else
       {:error, %{reason: "unauthorized"}}
     end
@@ -130,6 +134,11 @@ defmodule PhoenixKitBoards.Web.BoardChannel do
   end
 
   def handle_in(_event, _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket)
+      when ref == socket.assigns.live_view_monitor,
+      do: {:stop, :normal, socket}
 
   # Which stroke of this sender's a frame belongs to. Counted by the browser
   # that drew it, and carried so a peer can recognise a frame from a stroke

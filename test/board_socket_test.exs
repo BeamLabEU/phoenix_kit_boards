@@ -13,7 +13,7 @@ defmodule PhoenixKitBoards.BoardSocketTest do
   """
   use ExUnit.Case, async: true
 
-  alias PhoenixKitBoards.Web.BoardSocket
+  alias PhoenixKitBoards.Web.{BoardChannel, BoardSocket}
 
   @secret String.duplicate("abcdefgh", 8)
   @board "019f5d8a-d337-7915-8957-786f9bb2b8d4"
@@ -31,6 +31,7 @@ defmodule PhoenixKitBoards.BoardSocketTest do
       assert claims.id == "#{@board}:a1b2c3"
       assert claims.name == "Ada"
       assert claims.color == "#ef4444"
+      assert claims.live_view == self()
     end
 
     test "is bound to one board" do
@@ -82,6 +83,25 @@ defmodule PhoenixKitBoards.BoardSocketTest do
         assert {:error, _} = BoardSocket.verify(@secret, bad)
       end
     end
+  end
+
+  test "the ephemeral channel ends with the authorized page" do
+    page =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    claims = %{board: @board, live_view: page}
+    socket = %Phoenix.Socket{assigns: %{peer: claims}}
+
+    assert {:ok, joined} = BoardChannel.join("board:" <> @board, %{}, socket)
+    ref = joined.assigns.live_view_monitor
+    send(page, :stop)
+
+    assert_receive {:DOWN, ^ref, :process, ^page, :normal} = message
+    assert {:stop, :normal, ^joined} = BoardChannel.handle_info(message, joined)
   end
 
   describe "mount_path/0" do

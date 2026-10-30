@@ -13,6 +13,39 @@ defmodule PhoenixKitBoards.LinkPreviewTest do
 
   alias PhoenixKitBoards.LinkPreview
 
+  describe "the checked address is the address actually connected to" do
+    test "retains the HTTPS hostname, path, query and nonstandard port" do
+      uri = URI.parse("https://preview.example:8443/path?q=one")
+      opts = LinkPreview.connection_options(uri, {93, 184, 216, 34})
+
+      assert opts[:url] == "https://93.184.216.34:8443/path?q=one"
+      assert opts[:headers] == [{"host", "preview.example:8443"}]
+      assert opts[:connect_options] == [hostname: "preview.example"]
+    end
+
+    test "connects without resolving the original hostname, sending its Host header" do
+      {:ok, listener} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+      on_exit(fn -> :gen_tcp.close(listener) end)
+      {:ok, port} = :inet.port(listener)
+
+      server =
+        Task.async(fn ->
+          {:ok, socket} = :gen_tcp.accept(listener, 5_000)
+          {:ok, request} = :gen_tcp.recv(socket, 0, 5_000)
+          :ok = :gen_tcp.send(socket, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+          :gen_tcp.close(socket)
+          request
+        end)
+
+      uri = URI.parse("http://never-resolve.invalid:#{port}/preview")
+      opts = LinkPreview.connection_options(uri, {127, 0, 0, 1})
+      assert {:ok, %{status: 200, body: "ok"}} = Req.get(opts)
+      request = Task.await(server)
+      assert request =~ "GET /preview HTTP/1.1\r\n"
+      assert String.downcase(request) =~ "host: never-resolve.invalid:#{port}\r\n"
+    end
+  end
+
   describe "safe_uri/1 — scheme" do
     test "refuses anything that isn't http(s)" do
       assert {:error, {:bad_scheme, "file"}} = LinkPreview.safe_uri("file:///etc/passwd")

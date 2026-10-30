@@ -15,10 +15,10 @@ function board() {
     push(event, payload) {
       (this.canPush() ? this.sent : this.buffered).push([event, payload]);
     },
-    leave() {}
+    leave() { this.leaves = (this.leaves || 0) + 1; }
   };
   const socket = {
-    connected: true, connect() {}, disconnect() {},
+    connected: true, connect() {}, disconnect() { this.disconnects = (this.disconnects || 0) + 1; },
     isConnected() { return this.connected; },
     channel() { return channel; }
   };
@@ -59,6 +59,19 @@ function board() {
   assert.strictEqual(b.link.push("canvas", "drawing", {}), true, "stream resumes after rejoin");
   b.socket.connected = false;
   assert.strictEqual(b.link.push("canvas", "drawing", {}), false, "transport loss also drops frames");
+}
+
+// Both hooks share an offer, but a new page's token must replace the channel
+// that was tied to the former LiveView process.
+{
+  const b = board();
+  const first = b.link.ensure("canvas", { token: "token", topic: "board:uuid" });
+  assert.strictEqual(b.channel.leaves || 0, 0, "the same token reuses the connection");
+  const next = b.link.ensure("canvas", { token: "new-page", topic: "board:uuid" });
+  assert.notStrictEqual(first, next, "a new page creates a new channel");
+  assert.strictEqual(b.channel.leaves, 1);
+  assert.strictEqual(b.socket.disconnects, 1);
+  assert.strictEqual(next.token, "new-page");
 }
 
 const draft = { kind: "marker", geometry: { points: [[1, 2]] } };

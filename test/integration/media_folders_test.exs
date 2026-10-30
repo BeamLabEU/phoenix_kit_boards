@@ -149,7 +149,7 @@ defmodule PhoenixKitBoards.Integration.MediaFoldersTest do
       assert_received {:parent_hook, "Proj"}
     end
 
-    test "a failing parent hook falls back to the media root, never an error", %{user: u} do
+    test "a failing parent hook falls back to the default layout", %{user: u} do
       Application.put_env(
         :phoenix_kit_boards,
         :attachments_parent_folder,
@@ -157,7 +157,21 @@ defmodule PhoenixKitBoards.Integration.MediaFoldersTest do
       )
 
       board = board!(u, "B")
-      assert {:ok, %Folder{parent_uuid: nil}} = MediaFolders.ensure_folder(board, u.uuid)
+      assert parent_name(board) == "project alpha"
+      assert {:ok, %Folder{parent_uuid: parent}} = MediaFolders.ensure_folder(board, u.uuid)
+      assert parent == board.folder_parent_uuid
+    end
+
+    test "a function naming a missing folder uses the default layout", %{user: u} do
+      for answer <- [Ecto.UUID.generate(), {:ok, Ecto.UUID.generate()}] do
+        board = board!(u, "B", %{}, folder: fn _, _ -> answer end, label: "Fallback")
+        assert parent_name(board) == "Fallback"
+      end
+    end
+
+    test "a throwing folder function never prevents creating the board", %{user: u} do
+      board = board!(u, "B", %{}, folder: fn _, _ -> throw(:nope) end, label: "Fallback")
+      assert parent_name(board) == "Fallback"
     end
 
     test "the name hook names the board's folder", %{user: u} do
@@ -232,6 +246,23 @@ defmodule PhoenixKitBoards.Integration.MediaFoldersTest do
   end
 
   describe "deleting a board" do
+    test "a stale board still trashes the folder created by its first upload", %{user: u} do
+      board = board!(u, "Stale")
+      {:ok, folder} = MediaFolders.ensure_folder(board, u.uuid)
+      assert board.folder_uuid == nil
+
+      assert {:ok, _} = Boards.delete_board(board)
+      assert folder!(folder.uuid).trashed_at
+    end
+
+    test "a stale board still renames its newly created folder", %{user: u} do
+      board = board!(u, "Original")
+      {:ok, folder} = MediaFolders.ensure_folder(board, u.uuid)
+
+      assert {:ok, _} = Boards.rename_board(board, "Renamed")
+      assert folder!(folder.uuid).name == "Renamed"
+    end
+
     test "trashes its folder and leaves the place's alone", %{user: u} do
       board = board!(u, "Temp", %{}, label: "Keeps")
       {:ok, folder} = MediaFolders.ensure_folder(board, u.uuid)

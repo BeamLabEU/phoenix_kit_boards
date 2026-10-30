@@ -217,8 +217,49 @@ defmodule PhoenixKitBoards.Web.BoardLive do
        progress: &handle_image_progress/3
      )
      # Deliberately nothing pushed here. See `handle_event("board:ready")`.
-     |> assign(:peers, %{})}
+     |> assign(:peers, %{})
+     |> watch_access()}
   end
+
+  @access_check_ms 5_000
+
+  defp watch_access(%{assigns: %{live_action: :user}} = socket) do
+    Process.send_after(self(), :board_access_check, @access_check_ms)
+
+    socket
+    |> attach_hook(:board_access, :handle_event, fn
+      "cursor:move", _params, socket -> {:cont, socket}
+      _event, _params, socket -> access_hook(socket)
+    end)
+    |> attach_hook(:board_access, :handle_info, fn
+      {:board_annotations, _, _}, socket -> access_hook(socket)
+      {:store_board_image, _}, socket -> access_hook(socket)
+      _message, socket -> {:cont, socket}
+    end)
+  end
+
+  defp watch_access(socket), do: socket
+
+  defp access_hook(socket) do
+    case refresh_access(socket) do
+      {:ok, socket} -> {:cont, socket}
+      {:error, socket} -> {:halt, socket}
+    end
+  end
+
+  defp refresh_access(%{assigns: %{board: %{uuid: uuid}}} = socket) do
+    with %{} = current <- Boards.get_board(uuid, include_data: false),
+         true <- may_open?(current, socket) do
+      {:ok, assign(socket, :board, %{current | data: socket.assigns.board.data})}
+    else
+      _ ->
+        PubSub.unsubscribe(PubSubHelper.pubsub(), socket.assigns.topic)
+        {:ok, socket} = not_found(assign(socket, :board, nil))
+        {:error, socket}
+    end
+  end
+
+  defp refresh_access(socket), do: {:ok, socket}
 
   # Boards written before images were uploaded — or while an upload was
   # failing — carry the bytes inline. Doing this at open rather than waiting
@@ -833,6 +874,22 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # ── Remote events (peer → server → client) ────────────────────────────────
 
   @impl true
+  def handle_info(:board_access_check, socket) do
+    case refresh_access(socket) do
+      {:ok, socket} ->
+        Process.send_after(self(), :board_access_check, @access_check_ms)
+        {:noreply, socket}
+
+      {:error, socket} ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(:board_access_changed, socket) do
+    {_status, socket} = refresh_access(socket)
+    {:noreply, socket}
+  end
+
   def handle_info({:board_annotations, _incoming, from}, socket) when from == self(),
     do: {:noreply, socket}
 

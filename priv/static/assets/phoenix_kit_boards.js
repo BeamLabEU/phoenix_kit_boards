@@ -102,9 +102,9 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
 
       const existing = this.links[id];
       if (existing) {
-        // A remount hands out a fresh token for the same board; the live
-        // connection is still good.
-        if (existing.topic === info.topic) return existing;
+        // A remount's token belongs to a new LiveView process. Replace the
+        // channel so it cannot keep retrying an expired page's token.
+        if (existing.topic === info.topic && existing.token === info.token) return existing;
         this.close(id);
       }
 
@@ -119,7 +119,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
         socket.connect();
 
         const channel = socket.channel(info.topic, {});
-        link = { socket, channel, topic: info.topic, joined: false, handlers: {} };
+        link = { socket, channel, topic: info.topic, token: info.token, joined: false, handlers: {} };
 
         channel.onMessage = (event, payload, ref) => {
           const fn = link.handlers[event];

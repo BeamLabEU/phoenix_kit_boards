@@ -155,9 +155,9 @@ defmodule PhoenixKitBoards.MediaFolders do
       Logger.warning("[boards] resolving a board's folder failed: #{inspect(error.__struct__)}")
       :error
   catch
-    :exit, reason ->
+    kind, reason ->
       Logger.warning(
-        "[boards] resolving a board's folder exited: #{ResourceFolders.describe_failure({:exit, reason})}"
+        "[boards] resolving a board's folder failed: #{ResourceFolders.describe_failure({kind, reason})}"
       )
 
       :error
@@ -190,10 +190,10 @@ defmodule PhoenixKitBoards.MediaFolders do
   defp explicit_parent(fun, scope, actor) when is_function(fun, 2) do
     case fun.(scope, actor) do
       {:ok, uuid} ->
-        {:ok, live_uuid(uuid)}
+        live_parent(uuid)
 
       uuid when is_binary(uuid) ->
-        {:ok, live_uuid(uuid)}
+        live_parent(uuid)
 
       nil ->
         {:ok, nil}
@@ -216,12 +216,12 @@ defmodule PhoenixKitBoards.MediaFolders do
   defp inspect_shape(other) when is_atom(other), do: inspect(other)
   defp inspect_shape(_), do: "something unexpected"
 
-  defp live_uuid(nil), do: nil
+  defp live_parent(nil), do: {:ok, nil}
 
-  defp live_uuid(uuid) do
+  defp live_parent(uuid) do
     case ResourceFolders.live_folder(uuid) do
-      %Folder{uuid: live} -> live
-      nil -> nil
+      %Folder{uuid: live} -> {:ok, live}
+      nil -> :none
     end
   end
 
@@ -237,10 +237,19 @@ defmodule PhoenixKitBoards.MediaFolders do
   end
 
   defp hook_or_default(scope, label, actor) do
-    if ResourceFolders.hook_configured?(@app) do
-      ResourceFolders.parent_uuid(@app, :board, actor, %{scope: scope, label: label})
-    else
-      default_parent(scope, label, actor)
+    case ResourceFolders.parent_hook(@app, :board, actor, %{scope: scope, label: label}) do
+      {:ok, uuid} ->
+        case live_parent(uuid) do
+          {:ok, parent} -> parent
+          :none -> default_parent(scope, label, actor)
+        end
+
+      :unconfigured ->
+        default_parent(scope, label, actor)
+
+      {:error, reason} ->
+        Logger.warning("[boards] parent hook failed: #{ResourceFolders.describe_failure(reason)}")
+        default_parent(scope, label, actor)
     end
   end
 
@@ -559,8 +568,9 @@ defmodule PhoenixKitBoards.MediaFolders do
   the rename.
   """
   @spec rename_folder(Board.t(), String.t(), String.t()) :: :ok
-  def rename_folder(%Board{folder_uuid: uuid}, old_name, new_name) when is_binary(uuid) do
-    with %Folder{name: current} = folder <- ResourceFolders.live_folder(uuid),
+  def rename_folder(%Board{uuid: uuid}, old_name, new_name) do
+    with %Board{} = board <- repo().get(Board, uuid),
+         %Folder{name: current} = folder <- board_folder(board),
          true <- current == clean_name(old_name),
          new when new != "" and new != current <- clean_name(new_name),
          {:error, reason} <- Storage.update_folder(folder, %{name: new}) do

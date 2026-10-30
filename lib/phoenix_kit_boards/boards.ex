@@ -134,6 +134,8 @@ defmodule PhoenixKitBoards.Boards do
     * `:limit` — at most this many (default #{@default_limit})
     * `:search` — only names containing this text, case-insensitively
     * `:include_archived` — archived boards too (default `false`)
+    * `:include_data` — load the canvas document too (default `true`); set to
+      `false` for lists that only need the preview and board metadata
   """
   @spec list_for_scope(scope(), String.t() | nil, keyword()) :: [Board.t()]
   def list_for_scope(scope, user_uuid, opts \\ []) do
@@ -144,6 +146,7 @@ defmodule PhoenixKitBoards.Boards do
     |> search_filter(Keyword.get(opts, :search))
     |> order_by([b], desc_nulls_last: b.pinned_at, desc: b.updated_at, desc: b.uuid)
     |> limit(^Keyword.get(opts, :limit, @default_limit))
+    |> select_data(opts)
     |> repo().all()
   end
 
@@ -200,11 +203,20 @@ defmodule PhoenixKitBoards.Boards do
 
   def scope_of(%Board{}), do: nil
 
-  @doc "Fetch a board by id, or `nil`."
-  def get_board(id) do
-    repo().get(Board, id)
+  @doc "Fetch a board by id, or `nil`. Pass `include_data: false` for metadata only."
+  def get_board(id, opts \\ []) do
+    repo().get(select_data(Board, opts), id)
   rescue
     Ecto.Query.CastError -> nil
+  end
+
+  defp select_data(query, opts) do
+    if Keyword.get(opts, :include_data, true) do
+      query
+    else
+      fields = Board.__schema__(:fields) -- [:data]
+      select(query, [b], struct(b, ^fields))
+    end
   end
 
   @doc """
@@ -268,7 +280,9 @@ defmodule PhoenixKitBoards.Boards do
           {:ok, Board.t()} | {:error, :forbidden | Ecto.Changeset.t()}
   def set_visibility(%Board{} = board, visibility, user_uuid) do
     if creator?(board, user_uuid) do
-      board |> Board.visibility_changeset(visibility) |> repo().update() |> announced()
+      result = board |> Board.visibility_changeset(visibility) |> repo().update() |> announced()
+      if match?({:ok, _}, result), do: access_changed(board)
+      result
     else
       {:error, :forbidden}
     end
@@ -332,8 +346,21 @@ defmodule PhoenixKitBoards.Boards do
   returned, because the board is deleted either way. Files are not deleted.
   """
   def delete_board(%Board{} = board) do
-    with {:ok, deleted} <- repo().delete(board) do
-      case MediaFolders.trash_folder(board) do
+    # Uploads write the folder pointer independently of the editor's struct.
+    # Read it under a row lock so deletion cannot miss a folder just created
+    # by this or another session.
+    result =
+      repo().transaction(fn ->
+        current = repo().one!(from(b in Board, where: b.uuid == ^board.uuid, lock: "FOR UPDATE"))
+
+        case repo().delete(current) do
+          {:ok, deleted} -> deleted
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+
+    with {:ok, deleted} <- result do
+      case MediaFolders.trash_folder(deleted) do
         :ok ->
           :ok
 
@@ -343,8 +370,21 @@ defmodule PhoenixKitBoards.Boards do
       end
 
       announce(deleted)
+      access_changed(deleted)
       {:ok, deleted}
     end
+  end
+
+  defp access_changed(board) do
+    PubSub.broadcast(
+      PubSubHelper.pubsub(),
+      "phoenix_kit_boards:#{board.uuid}",
+      :board_access_changed
+    )
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   # ── Canvas load / save ────────────────────────────────────────────────────

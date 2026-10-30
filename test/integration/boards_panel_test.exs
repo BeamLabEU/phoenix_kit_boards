@@ -213,6 +213,83 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       def can?(:create, _user, _scope), do: false
     end
 
+    test "refresh rechecks access for a user who lost permission", %{conn: conn, me: me} do
+      board!(me, "Revoked secret")
+      {:ok, lv, _} = mount_panel(conn, me)
+      Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
+
+      BoardsPanel.refresh("panel", lv.pid)
+      html = render(lv)
+      refute html =~ "Revoked secret"
+      refute html =~ "panel-new"
+    end
+
+    test "mutations recheck permission before the next refresh", %{conn: conn, me: me} do
+      board = board!(me, "Protected")
+      {:ok, lv, _} = mount_panel(conn, me, open: :new_tab)
+      Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
+
+      fire(lv, "create_empty", %{})
+      fire(lv, "quick_note", %{"note" => "Not allowed"})
+      fire(lv, "pin", %{"id" => board.uuid})
+      fire(lv, "rename_save", %{"board_id" => board.uuid, "name" => "Changed"})
+      fire(lv, "delete", %{"id" => board.uuid})
+
+      assert Boards.count_for_scope(@scope, me.uuid) == 1
+      assert %{name: "Protected", pinned_at: nil} = Boards.get_board(board.uuid)
+    end
+
+    test "a malformed replacement scope cannot retain unscoped access", %{conn: conn, me: me} do
+      {:ok, _} = Boards.create_board(%{"name" => "Unscoped secret", "created_by" => me.uuid})
+      {:ok, lv, _} = mount_panel(conn, me, scope: nil, open: :new_tab)
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        current_user: me,
+        scope: {"order", nil},
+        poll: 0
+      )
+
+      refute render(lv) =~ "Unscoped secret"
+      fire(lv, "create_empty", %{})
+      assert Boards.count_for_scope(nil, me.uuid) == 1
+    end
+
+    test "a private-only replacement cannot reuse a shared selection", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me, open: :new_tab)
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        current_user: me,
+        scope: @scope,
+        poll: 0,
+        visibility_options: [:private],
+        open: :new_tab
+      )
+
+      render(lv)
+      fire(lv, "quick_note", %{"note" => "Personal"})
+      assert [%{visibility: "private"}] = Boards.list_for_scope(@scope, me.uuid)
+    end
+
+    test "moving the widget clears a draft and its visibility selection", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me, default_visibility: :private)
+      fire(lv, "text_open", %{})
+      fire(lv, "note_changed", %{"note" => "Private draft"})
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        current_user: me,
+        scope: {"project", "elsewhere"},
+        poll: 0
+      )
+
+      html = render(lv)
+      refute html =~ "Private draft"
+      refute has_element?(lv, "#panel-note")
+      assert has_element?(lv, "option[value=shared][selected]")
+    end
+
     test "a refused place renders nothing — not even the heading", %{conn: conn, me: me} do
       board!(me, "Secret place board")
       Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})

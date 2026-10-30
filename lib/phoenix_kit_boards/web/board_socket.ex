@@ -75,7 +75,8 @@ defmodule PhoenixKitBoards.Web.BoardSocket do
       board: board_uuid,
       id: peer.id,
       name: peer.name,
-      color: peer.color
+      color: peer.color,
+      live_view: self()
     })
   end
 
@@ -87,7 +88,7 @@ defmodule PhoenixKitBoards.Web.BoardSocket do
   @impl true
   def connect(%{"token" => token}, socket, _connect_info) do
     case verify(socket, token) do
-      {:ok, %{board: board} = peer} when is_binary(board) ->
+      {:ok, %{board: board, live_view: pid} = peer} when is_binary(board) and is_pid(pid) ->
         {:ok, assign(socket, :peer, peer)}
 
       _ ->

@@ -12,7 +12,7 @@ defmodule PhoenixKitBoards.Web.IndexLive do
     {:ok,
      socket
      |> assign(:page_title, "Boards")
-     |> load_boards()}
+     |> assign(:boards, if(connected?(socket), do: Boards.list_boards(), else: []))}
   end
 
   @impl true
