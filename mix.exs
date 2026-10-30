@@ -1,7 +1,7 @@
 defmodule PhoenixKitBoards.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.6.0"
   @source_url "https://github.com/BeamLabEU/phoenix_kit_boards"
 
   def project do
@@ -69,7 +69,17 @@ defmodule PhoenixKitBoards.MixProject do
       # the consumer's build, not a degraded feature. (`PhoenixKit.Module`
       # needs 1.7.46, `PubSubHelper` 1.7.28, `Dashboard.Tab` 1.7.21 — all
       # covered by the same floor.)
-      pk_dep(:phoenix_kit, ">= 2.0.0 and < 4.0.0"),
+      #
+      # 2.64.1 is where the floor sits now, for the places and per-board media
+      # folders: `Storage.ResourceFolders` (find-or-create, the pointer, filing a
+      # file), `Storage.Libraries.media?/1`, `Storage.create_folder/1`,
+      # `Storage.trash_folder/1`, `Storage.store_file_in_buckets/7`'s
+      # `:library_uuid`, `Auth.merge_user_custom_fields/3`, `Scope.can?/2` and
+      # `Components.Core.TimeDisplay`. Each is unguarded, so a core without one
+      # is a compile or runtime error in the host, not a degraded feature. It is
+      # the oldest core those were checked to exist in (2.64.1, 2.65.0, 3.0.0);
+      # the suite runs against 3.0.0.
+      pk_dep(:phoenix_kit, ">= 2.64.1 and < 4.0.0"),
       {:phoenix_live_view, "~> 1.1"},
 
       # The infinite-canvas engine + annotation layer. The host already loads
@@ -107,8 +117,16 @@ defmodule PhoenixKitBoards.MixProject do
       # stroke appear rather than waiting out the length of it. Guarded by
       # `typeof` like the drag APIs above, and pinned for the same reason —
       # an older etcher loses it without saying so.
-      pk_dep(:fresco, ">= 0.13.1 and < 1.0.0"),
-      pk_dep(:etcher, "~> 0.18"),
+      #
+      # fresco 0.15 and etcher 0.23 are the current floors: the releases core
+      # 3.0 itself requires (`~> 0.15.0` / `~> 0.23.0`), so a host can never
+      # resolve anything older next to it, and the board gets what came with
+      # them — the selection frame that scales and turns a group or a drawn
+      # stroke, a text box worked on while it is typed into, live size
+      # samples beside the panel's thickness and size controls, and the
+      # caret placed where a double-click lands.
+      pk_dep(:fresco, ">= 0.15.0 and < 1.0.0"),
+      pk_dep(:etcher, "~> 0.23"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). open_fresco emits SVG by itself and

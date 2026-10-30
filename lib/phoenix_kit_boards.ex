@@ -33,7 +33,7 @@ defmodule PhoenixKitBoards do
   ## Installation
 
       # host mix.exs
-      {:phoenix_kit_boards, "~> 0.4"}
+      {:phoenix_kit_boards, "~> 0.6"}
 
   Then `mix deps.get` and `mix phoenix_kit.update` (creates the
   `phoenix_kit_boards` table). Enable it on the admin Modules page.
@@ -72,7 +72,7 @@ defmodule PhoenixKitBoards do
   # ── Optional callbacks ─────────────────────────────────────────────────
 
   @impl PhoenixKit.Module
-  def version, do: "0.5.0"
+  def version, do: "0.6.0"
 
   @impl PhoenixKit.Module
   def permission_metadata do
@@ -99,6 +99,30 @@ defmodule PhoenixKitBoards do
         permission: module_key(),
         match: :prefix,
         group: :admin_modules
+      }
+    ]
+  end
+
+  @impl PhoenixKit.Module
+  @doc """
+  The board page for signed-in users who are not admins — the people who meet a
+  `PhoenixKitBoards.Web.BoardsPanel` on a page of the host app and open a board
+  from it. Hidden from the dashboard menu (`visible: false`): it exists only so
+  core generates the route, `/dashboard/boards/:id`, inside the authenticated
+  live_session with the user layout.
+
+  Whether a given user may open a given board is decided by
+  `PhoenixKitBoards.Access`, not by the route.
+  """
+  def user_dashboard_tabs do
+    [
+      %Tab{
+        id: :user_board,
+        label: "Board",
+        path: "/dashboard/boards/:id",
+        level: :user,
+        visible: false,
+        live_view: {PhoenixKitBoards.Web.BoardLive, :user}
       }
     ]
   end

@@ -12,7 +12,7 @@ in real time. Each board is one row in `phoenix_kit_boards`.
 
 ```elixir
 # host app mix.exs
-{:phoenix_kit_boards, "~> 0.4"}
+{:phoenix_kit_boards, "~> 0.6"}
 ```
 
 ```bash
@@ -26,7 +26,8 @@ the module).
 
 ## What you get
 
-- **Boards list** at `/admin/boards` — create / open / delete.
+- **Boards list** at `/admin/boards` — create / open / delete (all boards,
+  whoever they belong to).
 - **A board** at `/admin/boards/:id` — the collaborative canvas.
 - **Real-time collaboration** — shapes/text/images sync across everyone on the
   board; a presence roster and live cursors show who's there.
@@ -39,6 +40,148 @@ the module).
   previewed simply stays on the canvas as text.
 - **DB-backed** — the `Fresco.Canvas` document is stored in the `data` jsonb
   column.
+- **Boards that belong somewhere** — a board can belong to a *place* (a project,
+  a contact, a page…), be private to its creator or shared with everyone who can
+  see that place, and keep its files in a media folder of its own. See
+  "Boards in your own pages" below.
+- **A drop-in widget** — `PhoenixKitBoards.Web.Components.boards_panel/1` is a grid
+  of a place's quick boards with a **+** tile: start from nothing, a note or a
+  picture.
+
+## Boards in your own pages
+
+A widget for the quick boards of one place — put it in a section of any page,
+wherever people jot things down:
+
+```heex
+<PhoenixKitBoards.Web.Components.boards_panel
+  id="project-notes"
+  scope={{"project", @project.uuid}}
+  label="Notes"
+  current_user={@current_scope.user}
+  return_to={~p"/projects/#{@project}"}
+/>
+```
+
+It is a grid of tiles, one per board, and a last tile of the same size that makes a
+new one. With no boards yet that tile is all there is, centred:
+
+- the big **+** makes an empty canvas and opens it;
+- **Text** makes a canvas with a note already on it;
+- **Image** makes a canvas with a picture already on it — the phone's camera or any
+  file, and the tile is a drop target too.
+
+Text and image boards stay on the page and show up as tiles; the empty one opens,
+since there is nothing in it to see. A tile's menu renames, pins, makes private or
+shared, archives or deletes. The widget does not manage places or projects: *you*
+choose what place it is for (`scope` is any `{type, id}` pair of strings — a record,
+`{"project", uuid}`, or something that is not one, `{"page", "/docs/setup"}`) and put
+one wherever you want one. Every attribute is in the `PhoenixKitBoards.Web.BoardsPanel`
+moduledoc; the ones you will reach for:
+
+| attribute | what it does |
+|---|---|
+| `folder` | where the files of these boards go (below) |
+| `visibility_options` / `default_visibility` | who can see what people create here; one value hides the choice (`[:private]` = a personal notepad, `[:shared]` = a team one) |
+| `actions` | which ways to start a board to offer, from `[:empty, :text, :image]` |
+| `limit` | tiles shown before "Show all" |
+| `open` | `:navigate` or `:new_tab` |
+| `show_label` | `false` to keep `label` for the folder name without drawing it |
+
+Boards opened from the widget open at `/dashboard/boards/:id` (so people who are not
+admins can open them) and link back to `return_to`.
+
+### Who may see a place
+
+The module cannot know what "can see project X" means in your app, so it asks:
+
+```elixir
+config :phoenix_kit_boards, :authorize, {MyApp.Boards, :can?}
+
+# MyApp.Boards
+def can?(action, user, {"project", id}) when action in [:view, :create],
+  do: MyApp.Projects.member?(id, user)
+```
+
+With no hook any signed-in user may view and create. A hook that raises, exits or
+answers anything but a boolean **denies**. The hook can narrow access, never
+widen it: **private is always its creator's** (users holding the `boards` admin
+permission may still open any board, as they always could on `/admin/boards`).
+The panel renders nothing for a place the user may not view.
+
+### Where a board's files go
+
+Every upload on a board is filed in that board's **own** media folder, created on its
+first upload, so one folder holds exactly one board's files and nobody has to guess
+which picture belongs to which board. By default that folder is
+`Boards / <place> / <board name>`. To put them somewhere of your own — say each order
+has a folder, however deep, and each board needs a folder inside it:
+
+```heex
+<%!-- inside that folder (the board gets a folder of its own in it) --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:under, @order.storage_folder_uuid}} />
+
+<%!-- that chain of folders from the media root, found or created --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={{:path, ["Orders", @order.number, "Boards"]}} />
+
+<%!-- the media root itself --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={:root} />
+
+<%!-- or work it out when a board is made: fn {type, id}, actor_uuid -> {:ok, folder_uuid} end --%>
+<PhoenixKitBoards.Web.Components.boards_panel ... folder={&MyApp.Orders.boards_folder/2} />
+```
+
+or for the whole app, with the same hook convention the other modules use:
+
+```elixir
+config :phoenix_kit_boards,
+  attachments_parent_folder: {MyApp.Media, :board_parent},   # fun(:board, actor_uuid, %{scope:, label:})
+  attachments_folder_name: {MyApp.Media, :board_name}        # fun(board, actor_uuid)
+```
+
+What to know:
+
+- The parent is chosen **when the board is made** and remembered, so changing `folder`
+  later affects new boards only. The board's own folder is made by its first upload (or
+  by `PhoenixKitBoards.MediaFolders.ensure_folder/2` if you want it to exist at once, to
+  link to it).
+- The folder is named after the board and **follows a rename** — unless someone renamed
+  the folder by hand, or your name hook named it, in which case it is left alone. Two
+  boards with the same name beside each other get `board-<uuid>` for the second.
+- The folder may be in **any storage library**, not only Media: files are stored into
+  the folder's library, and the board's folder appears in that library's browser.
+  (Core's own `ResourceFolders.ensure/4` stamps new folders with the Media library
+  whatever their parent's is; boards makes such folders through `Storage.create_folder/1`
+  instead.) A *managed* library refuses new folders, so files there are stored but stay
+  loose and a warning is logged.
+- A `folder` that is not a live folder, or a function that fails, falls back to the
+  default layout — never the media root, where nobody would look.
+- Deleting a board moves its folder to the media trash; files are never deleted.
+
+### What a place can be
+
+`scope` is a pair of a type and an id: strings, integers or atoms, so `{"order", 1001}`,
+`{:project, project.id}` and `{"page", "/docs/setup"}` all work. They are stored as
+strings, and **that is what the `:authorize` hook receives** (`{"order", "1001"}`). A
+place with a missing id (`{"order", nil}`) shows nothing — never the boards that belong
+nowhere. Nothing in your database refers to a board: deleting an order does not delete
+its boards or folder (find them by `scope` with `PhoenixKitBoards.Boards.list_for_scope/3`).
+
+### Staying current
+
+The widget re-reads itself every few seconds (`poll`, in milliseconds; `0` turns it
+off), which needs nothing from your page. For instant updates, subscribe your
+LiveView to the place and forward the message:
+
+```elixir
+# mount/3, when connected?
+PhoenixKitBoards.Boards.subscribe_scope({"project", project.uuid})
+
+def handle_info({:boards_scope_changed, _board_uuid}, socket) do
+  PhoenixKitBoards.Web.BoardsPanel.refresh("project-notes")
+  {:noreply, socket}
+end
+```
 
 ## How it works
 

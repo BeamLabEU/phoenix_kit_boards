@@ -22,7 +22,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
-  alias PhoenixKitBoards.{Boards, LinkPreview, Paths}
+  alias PhoenixKitBoards.{Access, Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
   alias PhoenixKitBoards.Web.RuntimeHooks
 
@@ -91,7 +91,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
   @impl true
-  def mount(%{"id" => id}, _session, socket) do
+  def mount(%{"id" => id} = params, _session, socket) do
+    # Where the back arrow goes. Admins come from the boards list; a signed-in
+    # user comes from the page that embedded the panel, which it says in
+    # `return_to` — validated, since a query parameter is anyone's to write.
+    socket = assign(socket, :back_to, back_to(socket.assigns[:live_action], params))
+
     # LiveView mounts twice — once for the HTTP render, once on WebSocket
     # connect — so anything done unconditionally here runs twice. The
     # disconnected pass is pure waste on this page: #board-root is
@@ -111,69 +116,108 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp mount_connected(id, socket) do
     case Boards.get_board(id) do
       nil ->
-        {:ok,
-         socket
-         |> put_flash(:error, "Board not found.")
-         |> push_navigate(to: Paths.boards())}
+        not_found(socket)
 
       board ->
-        {board, canvas} = migrate_embedded_images(board, socket)
-        me = identity(socket)
-        topic = topic(board.uuid)
-
-        PubSubHelper.subscribe(topic)
-        broadcast(topic, {:board_join, me, self()})
-
-        {:ok,
-         socket
-         |> assign(:page_title, board.name)
-         |> assign(:board, board)
-         |> assign(:canvas, canvas)
-         # The canvas the TEMPLATE draws, assigned once and never again.
-         #
-         # `@canvas` carries the annotations, and `Fresco.canvas` writes them
-         # into `data-extensions` as JSON — so re-rendering it costs an encode
-         # and a diff of the whole board, and sends the result down the socket.
-         # On a board of any size that is enormous (5 MB on the demo board),
-         # and it happened on every edit, from either end.
-         #
-         # All of it was waste: `#board-root` is `phx-update="ignore"`, so the
-         # client discards the markup and takes its updates from `board:apply`
-         # instead. What it cost was real, though — the encode blocked the
-         # process while cursor messages queued behind it, which is what made
-         # remote cursors choppy and seconds late, and a frame that size per
-         # edit is enough to drop the socket and remount the peer.
-         #
-         # Separating the two assigns leaves change tracking with nothing to
-         # do: this one never changes, so the canvas subtree is rendered at
-         # mount and skipped forever after, while `@canvas` stays current for
-         # persistence without ever reaching the template.
-         |> assign(:initial_canvas, canvas)
-         |> assign(:annotations, Boards.annotations(canvas))
-         # When each shape this client has not vouched for got here. See
-         # `@peer_grace_ms`.
-         #
-         # Seeded with the whole board, because a client that has just
-         # arrived has vouched for nothing. A reconnect is the case that
-         # matters: the LiveView process dies with the socket and a new one
-         # starts here with no memory, while the browser still holds the board
-         # as it was before the line dropped — and pushes it. Every shape
-         # stored while that client was away is missing from what it sends,
-         # and without this every one of them would read as a delete.
-         |> assign(:peer_arrivals, arrivals_now(Boards.annotations(canvas)))
-         |> assign(:tools, @tools)
-         |> assign(:topic, topic)
-         |> assign(:me, me)
-         |> allow_upload(:board_image,
-           accept: upload_accept(),
-           max_entries: 1,
-           max_file_size: @image_max_bytes,
-           auto_upload: true,
-           progress: &handle_image_progress/3
-         )
-         # Deliberately nothing pushed here. See `handle_event("board:ready")`.
-         |> assign(:peers, %{})}
+        if may_open?(board, socket),
+          do: open_board(board, socket),
+          else: not_found(socket)
     end
+  end
+
+  # The admin route is already behind the admin gate and the `boards`
+  # permission, as it has always been. The user route is where a board's own
+  # rules apply: private is its creator's, and the host decides the place.
+  defp may_open?(board, socket) do
+    case socket.assigns[:live_action] do
+      :user ->
+        Access.can_open?(
+          board,
+          socket.assigns[:phoenix_kit_current_user],
+          socket.assigns[:phoenix_kit_current_scope]
+        )
+
+      _ ->
+        true
+    end
+  end
+
+  # One answer for "there is no such board" and "you may not see it": telling
+  # them apart would confirm that someone's private board exists.
+  defp not_found(socket) do
+    socket = put_flash(socket, :error, "Board not found.")
+
+    # The user route sends people back to a host page, which is in another
+    # live_session; `push_navigate` would be refused and logged.
+    if socket.assigns[:live_action] == :user,
+      do: {:ok, redirect(socket, to: socket.assigns.back_to)},
+      else: {:ok, push_navigate(socket, to: socket.assigns.back_to)}
+  end
+
+  # The site root, not `/dashboard`: whether the host has a user dashboard at
+  # all is its choice (this module only borrows its route table), and a back
+  # arrow into a 404 is worse than one into the home page.
+  defp back_to(:user, params), do: Paths.local_path(params["return_to"]) || "/"
+
+  defp back_to(_action, _params), do: Paths.boards()
+
+  defp open_board(board, socket) do
+    {board, canvas} = migrate_embedded_images(board, socket)
+    me = identity(socket)
+    topic = topic(board.uuid)
+
+    PubSubHelper.subscribe(topic)
+    broadcast(topic, {:board_join, me, self()})
+
+    {:ok,
+     socket
+     |> assign(:page_title, board.name)
+     |> assign(:board, board)
+     |> assign(:canvas, canvas)
+     # The canvas the TEMPLATE draws, assigned once and never again.
+     #
+     # `@canvas` carries the annotations, and `Fresco.canvas` writes them
+     # into `data-extensions` as JSON — so re-rendering it costs an encode
+     # and a diff of the whole board, and sends the result down the socket.
+     # On a board of any size that is enormous (5 MB on the demo board),
+     # and it happened on every edit, from either end.
+     #
+     # All of it was waste: `#board-root` is `phx-update="ignore"`, so the
+     # client discards the markup and takes its updates from `board:apply`
+     # instead. What it cost was real, though — the encode blocked the
+     # process while cursor messages queued behind it, which is what made
+     # remote cursors choppy and seconds late, and a frame that size per
+     # edit is enough to drop the socket and remount the peer.
+     #
+     # Separating the two assigns leaves change tracking with nothing to
+     # do: this one never changes, so the canvas subtree is rendered at
+     # mount and skipped forever after, while `@canvas` stays current for
+     # persistence without ever reaching the template.
+     |> assign(:initial_canvas, canvas)
+     |> assign(:annotations, Boards.annotations(canvas))
+     # When each shape this client has not vouched for got here. See
+     # `@peer_grace_ms`.
+     #
+     # Seeded with the whole board, because a client that has just
+     # arrived has vouched for nothing. A reconnect is the case that
+     # matters: the LiveView process dies with the socket and a new one
+     # starts here with no memory, while the browser still holds the board
+     # as it was before the line dropped — and pushes it. Every shape
+     # stored while that client was away is missing from what it sends,
+     # and without this every one of them would read as a delete.
+     |> assign(:peer_arrivals, arrivals_now(Boards.annotations(canvas)))
+     |> assign(:tools, @tools)
+     |> assign(:topic, topic)
+     |> assign(:me, me)
+     |> allow_upload(:board_image,
+       accept: upload_accept(),
+       max_entries: 1,
+       max_file_size: @image_max_bytes,
+       auto_upload: true,
+       progress: &handle_image_progress/3
+     )
+     # Deliberately nothing pushed here. See `handle_event("board:ready")`.
+     |> assign(:peers, %{})}
   end
 
   # Boards written before images were uploaded — or while an upload was
@@ -187,7 +231,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     canvas = Boards.load_canvas(board)
     annotations = Boards.annotations(canvas)
 
-    case hoist_embedded_images(annotations, socket) do
+    case hoist_embedded_images(annotations, board, socket) do
       {_annotations, []} ->
         {board, canvas}
 
@@ -249,7 +293,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
     with {:ok, user_uuid} <- require_user(user_uuid),
          {:ok, checksum} <- file_checksum(path),
-         {:ok, file} <- store(path, user_uuid, checksum, entry),
+         {:ok, file} <- store(path, user_uuid, checksum, entry, socket.assigns.board),
          url when is_binary(url) <- Storage.get_public_url(file) do
       {:ok, url}
     else
@@ -271,77 +315,16 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # stored with `file_type: "image"` — which broke them everywhere the media
   # page trusts that column (broken thumbnail tiles, invisible to the
   # video/audio filters, image variant processing run against a .mov).
-  defp store(path, user_uuid, checksum, entry) do
-    path
-    |> Storage.store_file_in_buckets(
-      file_type_for(entry),
-      user_uuid,
-      checksum,
-      ext_for(entry),
-      entry.client_name
-    )
-    |> normalize_stored()
-  end
+  defp store(path, user_uuid, checksum, entry, board),
+    do: Uploads.store(path, user_uuid, checksum, entry, board)
 
-  # `store_file_in_buckets/6` answers `{:ok, file, :duplicate}` when it
-  # recognises the bytes. Same file either way, so flatten to `{:ok, file}`
-  # rather than let the 3-tuple fall through as a failure and send the client
-  # back to embedding the image it just uploaded successfully.
-  defp normalize_stored({:ok, file, _dedupe}), do: {:ok, file}
-  defp normalize_stored(other), do: other
-
-  # The extension decides how the stored object is named and served, and the
-  # filename is the unreliable half of an entry — a clipboard paste is not
-  # guaranteed to carry a usable one, which is why `@image_accept` lists MIME
-  # types too. Fall back to the type when the name has nothing to give.
-  defp ext_for(entry) do
-    case entry.client_name |> Path.extname() |> String.replace_leading(".", "") do
-      "" -> entry.client_type |> to_string() |> MIME.extensions() |> List.first() || "bin"
-      ext -> ext
-    end
-  end
-
-  # Core's media browser hashes with SHA256 (`Auth.calculate_file_hash/1`).
-  # `store_file_in_buckets/6` dedupes on `user_uuid + file_checksum`, so an
-  # MD5 here meant the same bytes pasted onto a board and later uploaded
-  # through the media page minted two rows. Streamed: `@image_accept`
-  # invites video up to 256 MB, and `File.read/1` would hold all of it.
+  # Public so the helpers can be tested without a LiveView or a bucket; the
+  # work lives in `PhoenixKitBoards.Uploads`, which quick capture shares.
   @doc false
-  def file_checksum(path) do
-    case File.open(path, [:read, :raw, :binary], &sha256_io/1) do
-      {:ok, digest} -> {:ok, digest}
-      {:error, reason} -> {:error, reason}
-    end
-  rescue
-    e in File.Error -> {:error, e.reason}
-  end
+  defdelegate file_checksum(path), to: Uploads
 
-  defp sha256_io(io) do
-    io
-    |> hash_io(:crypto.hash_init(:sha256))
-    |> Base.encode16(case: :lower)
-  end
-
-  defp hash_io(io, acc) do
-    case IO.binread(io, 65_536) do
-      :eof ->
-        :crypto.hash_final(acc)
-
-      {:error, reason} ->
-        raise File.Error, reason: reason, action: "read", path: ""
-
-      data when is_binary(data) ->
-        hash_io(io, :crypto.hash_update(acc, data))
-    end
-  end
-
-  # Public so the classifier can be tested without a LiveView or a bucket —
-  # hardcoding `"image"` again would be silent, and the suite has no database.
   @doc false
-  def file_type_for(%{client_type: type, client_name: name}),
-    do: Storage.determine_file_type(type, name)
-
-  def file_type_for(_), do: Storage.determine_file_type(nil, nil)
+  defdelegate file_type_for(entry), to: Uploads
 
   # ── Embedded images → storage ─────────────────────────────────────────────
   #
@@ -360,9 +343,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   #
   # Failure here is not fatal: the shape keeps its data URL and the board
   # stays heavy, which is where it already was.
-  defp hoist_embedded_images(annotations, socket) do
+  defp hoist_embedded_images(annotations, board, socket) do
     if Enum.any?(annotations, &embedded_image?/1) do
-      Enum.map_reduce(annotations, [], &hoist_one(&1, &2, socket))
+      Enum.map_reduce(annotations, [], &hoist_one(&1, &2, board, socket))
     else
       # The overwhelmingly common case: nothing embedded, so this costs one
       # pass over the list and no work at all.
@@ -370,8 +353,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  defp hoist_one(shape, done, socket) do
-    case hoist_shape(shape, socket) do
+  defp hoist_one(shape, done, board, socket) do
+    case hoist_shape(shape, board, socket) do
       {:ok, rewritten} -> {rewritten, [rewritten | done]}
       :error -> {shape, done}
     end
@@ -511,8 +494,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     })
   end
 
-  defp hoist_shape(%{"geometry" => %{"href" => "data:" <> _ = href} = geom} = shape, socket) do
-    case store_data_url(href, socket) do
+  defp hoist_shape(
+         %{"geometry" => %{"href" => "data:" <> _ = href} = geom} = shape,
+         board,
+         socket
+       ) do
+    case store_data_url(href, board, socket) do
       {:ok, url} ->
         {:ok, Map.put(shape, "geometry", Map.put(geom, "href", url))}
 
@@ -525,9 +512,9 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  defp hoist_shape(_shape, _socket), do: :error
+  defp hoist_shape(_shape, _board, _socket), do: :error
 
-  defp store_data_url(href, socket) do
+  defp store_data_url(href, board, socket) do
     with {:ok, bytes, ext} <- decode_data_url(href),
          {:ok, user_uuid} <- require_user(uploader_uuid(socket)) do
       # A name only for the extension and for what the file is called in the
@@ -544,7 +531,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       try do
         with :ok <- File.write(path, bytes),
              {:ok, checksum} <- file_checksum(path),
-             {:ok, file} <- store(path, user_uuid, checksum, entry),
+             {:ok, file} <- store(path, user_uuid, checksum, entry, board),
              url when is_binary(url) <- Storage.get_public_url(file) do
           {:ok, url}
         else
@@ -686,7 +673,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       # every collaborator wait on the disk.
       # Any image still carrying its bytes goes to storage first, so what is
       # broadcast, stored and re-sent from here on is a URL.
-      {annotations, hoisted} = hoist_embedded_images(incoming, socket)
+      {annotations, hoisted} = hoist_embedded_images(incoming, socket.assigns.board, socket)
 
       broadcast(socket.assigns.topic, {:board_annotations, annotations, self()})
 
@@ -768,8 +755,6 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     {:noreply, socket}
   end
 
-  def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
-
   # The user changed how they like the board set up — which tools are on the
   # bar, how much of the style panel is open, whether the dots are shown.
   #
@@ -781,9 +766,14 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # Etcher does not know or care that this is where they end up. It emits the
   # change and accepts them back; a host storing them in a cookie, a
   # per-board row, or nowhere at all satisfies the same contract.
+  #
+  # Above the `"etcher:" <> _` catch-all, which swallowed it: until this moved,
+  # nothing was ever saved and every visit started from Etcher's defaults.
   def handle_event("etcher:prefs-changed", prefs, socket) when is_map(prefs) do
     {:noreply, save_prefs(socket, prefs)}
   end
+
+  def handle_event("etcher:" <> _rest, _params, socket), do: {:noreply, socket}
 
   # A local pointer move → broadcast our cursor (canvas coords) to peers.
   #
@@ -990,25 +980,37 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
+  # A browser can send anything, and this lands in the user's own row for good.
+  # Real preferences are a few hundred bytes (tool bar, panel state, flags).
+  @prefs_max_bytes 8_192
+
   defp save_prefs(socket, prefs) do
     case socket.assigns[:phoenix_kit_current_user] do
-      %{} = user ->
-        # Merged inside the UPDATE rather than read-modify-written here: a
-        # user with two boards open would otherwise have whichever tab saved
-        # second silently overwrite the other's keys.
-        case Auth.merge_user_custom_fields(user, %{@prefs_field => prefs}) do
-          {:ok, updated} -> assign(socket, :phoenix_kit_current_user, updated)
-          # The row went away underneath us, or the write failed. Preferences
-          # are a convenience — losing one is not worth interrupting whatever
-          # the person is drawing.
-          _ -> socket
-        end
+      %{} = user when is_map(prefs) ->
+        if prefs_small_enough?(prefs), do: store_prefs(socket, user, prefs), else: socket
 
       _ ->
         # Nobody to store them against. Etcher falls back to localStorage on
         # its own, so a signed-out user still keeps their setup on this
         # browser; it just cannot follow them anywhere.
         socket
+    end
+  end
+
+  defp prefs_small_enough?(prefs) do
+    case Jason.encode(prefs) do
+      {:ok, json} -> byte_size(json) <= @prefs_max_bytes
+      _ -> false
+    end
+  end
+
+  defp store_prefs(socket, user, prefs) do
+    case Auth.merge_user_custom_fields(user, %{@prefs_field => prefs}) do
+      {:ok, updated} -> assign(socket, :phoenix_kit_current_user, updated)
+      # The row went away underneath us, or the write failed. Preferences
+      # are a convenience — losing one is not worth interrupting whatever
+      # the person is drawing.
+      _ -> socket
     end
   end
 
@@ -1139,8 +1141,19 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     --%>
     <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]">
       <header class="flex items-center gap-3 shrink-0">
+        <%!-- A plain link for the user route: it goes back to a host page in
+              another live_session, which `navigate` would refuse. --%>
+        <a
+          :if={@live_action == :user}
+          href={@back_to}
+          class="btn btn-ghost btn-sm btn-circle"
+          aria-label="Back to boards"
+        >
+          <.icon name="hero-arrow-left" class="w-5 h-5" />
+        </a>
         <.link
-          navigate={Paths.boards()}
+          :if={@live_action != :user}
+          navigate={@back_to}
           class="btn btn-ghost btn-sm btn-circle"
           aria-label="Back to boards"
         >
