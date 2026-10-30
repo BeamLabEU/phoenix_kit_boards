@@ -329,7 +329,7 @@ that fails when the guard is removed — keep it that way.
 
 ## Versioning & Releases
 
-This module has not been released yet — there are no tags and it is not on Hex.
+Released on Hex as `phoenix_kit_boards`, one `v`-prefixed git tag per release.
 
 ### Tagging
 

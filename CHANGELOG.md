@@ -4,6 +4,80 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.6.0 - 2026-10-30
+
+Boards can now belong to a place inside a host app, be private or shared, keep
+their files in a media folder of their own, and be made from a drop-in widget.
+
+### Added
+
+- **A quick-board widget**, `PhoenixKitBoards.Web.Components.boards_panel/1` (the
+  `PhoenixKitBoards.Web.BoardsPanel` LiveComponent). A grid of square tiles, one
+  per board, and a last tile of the same size that makes one: the big **+** makes
+  an empty canvas and opens it, **Text** makes a canvas with a note already on
+  it, **Image** (camera or file, and a drop target) makes a canvas with the
+  picture already on it. A tile's menu renames, pins, makes private or shared,
+  archives or deletes. With no boards yet the new-board tile is alone and
+  centred. It does not manage places or projects — the host chooses what place
+  it is for. Attributes: `scope`, `label`, `show_label`, `folder`,
+  `visibility_options`, `default_visibility`, `actions`, `limit`, `open`,
+  `return_to`, `poll`, `class`. It re-reads itself on a timer; hosts wanting
+  instant updates use `Boards.subscribe_scope/1` and `BoardsPanel.refresh/2`.
+- **Places.** A board optionally belongs to a place, `{scope_type, scope_id}`:
+  strings, integers or atoms, stored as strings. A place with a missing id shows
+  nothing — never the boards that belong nowhere. `Boards.list_for_scope/3`,
+  `count_for_scope/3`, `normalize_scope/1`, `scope_topic/1`.
+- **Private and shared boards.** `visibility` is `private` (the creator only) or
+  `shared`; `Boards.set_visibility/3`, `pin/2`, `unpin/2`, `archive/2`,
+  `unarchive/2`. Existing boards become unscoped and shared.
+- **Who may see a place is the host's call:** an optional
+  `config :phoenix_kit_boards, :authorize, {Mod, :can?}`, called as
+  `can?(:view | :create, user, scope)`. A hook that raises, exits or answers
+  anything but a boolean **denies**. It can narrow access, never widen a private
+  board. Admins with the `boards` permission still open anything.
+  `PhoenixKitBoards.Access`.
+- **Boards open for people who are not admins** at `/dashboard/boards/:id` (a
+  hidden user-dashboard tab, from which core generates the route), with a
+  validated `return_to` back link. A missing board and a forbidden one answer the
+  same "Board not found."
+- **A media folder per board.** Every upload on a board is filed in the board's
+  own folder, made on its first upload, so one folder holds exactly one board's
+  files. Default `Boards / <place> / <board>`; override per widget with
+  `folder={{:under, uuid}}`, `{:path, [...]}`, `:root` or a function, or for the
+  whole app with the `:attachments_parent_folder` / `:attachments_folder_name`
+  hooks. The folder follows a rename of the board (unless it was renamed by hand
+  or named by the hook), may sit in **any storage library**, and is trashed with
+  the board; files are never deleted. `PhoenixKitBoards.MediaFolders`,
+  `PhoenixKitBoards.Uploads`.
+- **Quick capture.** `PhoenixKitBoards.Quick` makes a board from nothing, a note
+  or an image, sized for the canvas a board starts with.
+- **Migration V2** (additive; every column nullable or defaulted): `scope_type`,
+  `scope_id`, `visibility`, `kind`, `folder_uuid`, `folder_parent_uuid`,
+  `preview`, `pinned_at`, `archived_at`. Hosts run `mix phoenix_kit.update`.
+- **Database tests** — a `DataCase`, a bare endpoint for `Phoenix.LiveViewTest`
+  and integration tests for all of the above (the module had none).
+
+### Changed
+
+- **The core floor is now `>= 2.64.1`** (was `>= 2.0.0`; the ceiling is
+  unchanged). The new code calls `Storage.ResourceFolders`, `Libraries.media?/1`,
+  `Storage.create_folder/1`, `trash_folder/1`, `store_file_in_buckets`'s
+  `:library_uuid`, `Auth.merge_user_custom_fields/3`, `Scope.can?/2` and
+  `TimeDisplay`, none of them guarded; all exist from 2.64.1.
+- Saving a board stores a small `preview` (first text, first image, shape count)
+  and announces `{:boards_scope_changed, board_uuid}` on the place's topic when
+  it changed. The message carries no name, so a private board does not leak.
+- **The fresco and etcher floors move to `fresco >= 0.15.0` and `etcher ~> 0.23`**,
+  the releases core pins now, and the locked `bandit` is updated (the old one
+  failed `mix hex.audit`). With etcher 0.24 a pasted image comes in at a usable
+  size, once core's pin allows it.
+
+### Fixed
+
+- **The editor's preferences were never saved.** The `etcher:prefs-changed`
+  clause sat below the `"etcher:" <> _` catch-all, which swallowed it. It is now
+  above it, and capped at 8 KB since the report comes from the browser.
+
 ## 0.5.0 - 2026-10-27
 
 ### Changed
