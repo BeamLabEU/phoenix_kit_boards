@@ -26,6 +26,14 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   opens, because there is nothing in it to see. Each tile has a menu: rename,
   pin, make private or shared, archive, delete.
 
+  **Paste.** Click into the widget (or tab to it) and paste: text makes a note
+  board, and images — one or several, with any text that came with them — make
+  ONE board holding all of them. It only listens while the widget has focus, and
+  never while you are typing in one of its fields, so a paste anywhere else on
+  the page is untouched. The new-board tile shows a faint hint while it is
+  listening, and a short notice with **Undo** follows each paste. The board is
+  not opened, so several pastes in a row are fine. `paste={false}` turns it off.
+
   The widget does not manage places or projects — *you* decide what place it
   is for, by `scope`, and put one wherever you want one.
 
@@ -50,6 +58,9 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     * `default_visibility` — `:shared` or `:private`
     * `actions` — which ways to start a board to offer, from `[:empty, :text,
       :image]` (default all three)
+    * `paste` — `false` to switch off paste-to-make-a-board (default `true`)
+    * `script_nonce` — CSP nonce for the one `<script>` the paste behaviour
+      needs, for a host that enforces a Content-Security-Policy
     * `limit` — tiles shown before "Show all" (default 11, so a row of four fills
       neatly with the new-board tile)
     * `open` — `:navigate` (default) or `:new_tab`: what opening a board does
@@ -96,6 +107,16 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
   @image_max_bytes 25_000_000
   @note_max 2_000
+  @paste_notice_ms 8_000
+  @max_paste_files 8
+
+  # The paste behaviour is a few dozen lines of browser code. It travels with
+  # the widget as a runtime hook (see `PhoenixKitBoards.Web.RuntimeHooks` for
+  # the mechanism) rather than through the 40 KB board bundle, which a page of
+  # tiles has no other use for.
+  @paste_js Path.expand("../../../priv/static/assets/boards_panel_paste.js", __DIR__)
+  @external_resource @paste_js
+  @paste_hook File.read!(@paste_js)
 
   @doc """
   Re-read the widget with the given `id` now. Call from the host LiveView, e.g.
@@ -109,6 +130,14 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   @impl true
   def update(%{refresh: true}, socket), do: {:ok, load(socket)}
+
+  # The notice clears itself — unless a newer board has replaced it.
+  def update(%{clear_created: uuid}, socket) do
+    case socket.assigns[:created] do
+      %{id: ^uuid} -> {:ok, assign(socket, :created, nil)}
+      _ -> {:ok, socket}
+    end
+  end
 
   # One chain of timers per widget: a tick clears the flag and re-arms, and a
   # host re-render in between finds it set and does not start a second chain.
@@ -148,6 +177,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:return_to, Paths.local_path(assigns[:return_to]))
     |> assign(:poll, Map.get(assigns, :poll, @default_poll))
     |> assign(:class, assigns[:class])
+    |> assign(:paste?, Map.get(assigns, :paste, true) != false)
+    |> assign(:script_nonce, assigns[:script_nonce])
     |> assign(:visibility_options, visibility_options(assigns[:visibility_options]))
     |> assign(:default_visibility, default_visibility(assigns))
     |> assign(:admin?, admin?(user))
@@ -244,12 +275,14 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:error, nil)
     |> assign(:note, "")
     |> assign(:text_open?, false)
+    |> assign(:created, nil)
+    |> assign(:paste_text, nil)
     |> assign(:visibility, socket.assigns.default_visibility)
     |> assign(:boards, [])
     |> assign(:total, 0)
     |> allow_upload(:quick_image,
       accept: image_accept(),
-      max_entries: 1,
+      max_entries: @max_paste_files,
       max_file_size: @image_max_bytes,
       auto_upload: true,
       progress: &handle_image_progress/3
@@ -349,6 +382,49 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end
   end
 
+  # Text pasted into the widget: a note board of its own, kept on the page.
+  def handle_event("paste_text", %{"text" => text}, socket) when is_binary(text) do
+    with true <- socket.assigns.paste? and :text in socket.assigns.actions,
+         :ok <- allow_create(socket) do
+      case Quick.create_collection(
+             socket.assigns.scope,
+             socket.assigns.user_uuid,
+             [],
+             text,
+             create_opts(socket)
+           ) do
+        {:ok, board} -> {:noreply, created(socket, board)}
+        {:error, :empty} -> {:noreply, socket}
+        {:error, _reason} -> {:noreply, fail(socket, "Could not save the note.")}
+      end
+    else
+      {:error, message} -> {:noreply, fail(socket, message)}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  # Said just before pasted images are uploaded: whatever text came with them
+  # goes on the same board, and the finished upload is announced as a paste.
+  def handle_event("paste_context", %{"text" => text}, socket) when is_binary(text) do
+    if socket.assigns.paste? and :image in socket.assigns.actions,
+      do: {:noreply, assign(socket, :paste_text, String.slice(text, 0, @note_max))},
+      else: {:noreply, socket}
+  end
+
+  def handle_event("undo_paste", %{"id" => id}, socket) do
+    with %{id: ^id} <- socket.assigns.created,
+         {:ok, board} <- visible_board(socket, id),
+         :ok <- allow_manage(socket, board),
+         {:ok, _} <- Boards.delete_board(board) do
+      {:noreply, socket |> assign(:created, nil) |> load()}
+    else
+      _ -> {:noreply, socket |> assign(:created, nil) |> load()}
+    end
+  end
+
+  def handle_event("dismiss_created", _params, socket),
+    do: {:noreply, assign(socket, :created, nil)}
+
   def handle_event("note_changed", %{"note" => text}, socket),
     do: {:noreply, assign(socket, :note, String.slice(text, 0, @note_max))}
 
@@ -422,40 +498,86 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
-  # An upload finished: make the board. Heavy work in a progress callback, as on
-  # the board page — a photo is small and the person is waiting.
-  defp handle_image_progress(:quick_image, %{done?: true} = entry, socket) do
-    case allow_create(socket) do
-      :ok ->
-        result =
-          consume_uploaded_entry(socket, entry, fn %{path: path} ->
-            {:ok,
-             Quick.create_image(
-               socket.assigns.scope,
-               socket.assigns.user_uuid,
-               path,
-               entry,
-               create_opts(socket)
-             )}
-          end)
+  # Uploads finished: make ONE board of them. A picture chosen or dropped on its
+  # own is a board with that picture; several at once, or a paste that came with
+  # text, share a board. The work waits for the last file — each one reports
+  # done separately.
+  defp handle_image_progress(:quick_image, %{done?: true}, socket) do
+    entries = socket.assigns.uploads.quick_image.entries
 
-        case result do
-          {:ok, _board} ->
-            {:noreply, socket |> assign(:error, nil) |> load()}
-
-          {:error, reason} ->
-            # Storage's own reasons are for the log, not for the person.
-            Logger.warning("[boards] quick image failed: #{inspect(reason)}")
-            {:noreply, fail(socket, "Could not save the image.")}
-        end
-
-      {:error, message} ->
-        # Not consumed: the entry is dropped with the upload.
-        {:noreply, fail(socket, message)}
+    if Enum.all?(entries, & &1.done?) do
+      make_image_board(socket)
+    else
+      {:noreply, socket}
     end
   end
 
   defp handle_image_progress(:quick_image, _entry, socket), do: {:noreply, socket}
+
+  defp make_image_board(socket) do
+    pasted? = socket.assigns.paste_text != nil
+    text = socket.assigns.paste_text
+    socket = assign(socket, :paste_text, nil)
+
+    case allow_create(socket) do
+      :ok ->
+        # The upload's temp files go when each is consumed, so they are copied
+        # out to be handled together.
+        files =
+          consume_uploaded_entries(socket, :quick_image, fn %{path: path}, entry ->
+            copy =
+              Path.join(System.tmp_dir!(), "boards-paste-#{System.unique_integer([:positive])}")
+
+            case File.cp(path, copy) do
+              :ok -> {:ok, {copy, entry}}
+              {:error, _} -> {:postpone, nil}
+            end
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        try do
+          Quick.create_collection(
+            socket.assigns.scope,
+            socket.assigns.user_uuid,
+            files,
+            text,
+            create_opts(socket)
+          )
+        after
+          Enum.each(files, fn {copy, _entry} -> File.rm(copy) end)
+        end
+        |> case do
+          {:ok, board} when pasted? -> {:noreply, created(socket, board)}
+          {:ok, _board} -> {:noreply, socket |> assign(:error, nil) |> load()}
+          {:error, :empty} -> {:noreply, socket}
+          {:error, reason} -> {:noreply, fail_image(socket, reason)}
+        end
+
+      {:error, message} ->
+        # Not consumed: the entries are dropped with the upload.
+        {:noreply, fail(socket, message)}
+    end
+  end
+
+  # Storage's own reasons are for the log, not for the person.
+  defp fail_image(socket, reason) do
+    Logger.warning("[boards] quick image failed: #{inspect(reason)}")
+    fail(socket, "Could not save the image.")
+  end
+
+  # A board that appeared from a paste: on the page, announced, undoable.
+  defp created(socket, board) do
+    Phoenix.LiveView.send_update_after(
+      __MODULE__,
+      [id: socket.assigns.id, clear_created: board.uuid],
+      @paste_notice_ms
+    )
+
+    socket
+    |> assign(:error, nil)
+    |> assign(:created, %{id: board.uuid, name: board.name})
+    |> load()
+  end
 
   # ── Checks ─────────────────────────────────────────────────────────────
 
@@ -548,11 +670,61 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   def render(assigns) do
     ~H"""
-    <section id={@id} class={["space-y-3", @class]} data-boards-panel>
+    <section
+      id={@id}
+      class={["group/panel space-y-3 outline-none", @class]}
+      data-boards-panel
+      phx-hook={if @paste?, do: "BoardsPanelPaste"}
+      tabindex={if @paste?, do: "-1"}
+      data-paste={if @paste?, do: "on", else: "off"}
+      data-paste-images={if :image in @actions, do: "on", else: "off"}
+      data-paste-text={if :text in @actions, do: "on", else: "off"}
+    >
+      <script :if={@paste?} data-phx-runtime-hook="BoardsPanelPaste" nonce={@script_nonce}>
+        <%= Phoenix.HTML.raw("window.phx_hook_BoardsPanelPaste = function () { return " <> paste_hook() <> "; };") %>
+      </script>
+
+      <%!-- The one upload input for the panel, kept apart from the tile so a
+            paste can reach it whatever the tile is showing (the note form
+            replaces it). The tile's camera button is a label for this. --%>
+      <form
+        :if={:image in @actions}
+        id={"#{@id}-image"}
+        phx-change="validate_image"
+        phx-target={@myself}
+        class="hidden"
+      >
+        <.live_file_input upload={@uploads.quick_image} />
+      </form>
+
       <h3 :if={@label && @show_label?} class="text-sm font-medium text-base-content/70">
         {@label}
         <span :if={@total > 0} class="ml-1 text-xs font-normal text-base-content/50">{@total}</span>
       </h3>
+
+      <div :if={@created} role="status" class="alert py-2 text-sm">
+        <span>Board created: {@created.name}</span>
+        <span class="flex items-center gap-1">
+          <button
+            type="button"
+            phx-click="undo_paste"
+            phx-value-id={@created.id}
+            phx-target={@myself}
+            class="btn btn-ghost btn-xs"
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            phx-click="dismiss_created"
+            phx-target={@myself}
+            class="btn btn-ghost btn-xs btn-circle"
+            aria-label="Dismiss"
+          >
+            <.icon name="hero-x-mark" class="h-3.5 w-3.5" />
+          </button>
+        </span>
+      </div>
 
       <div :if={@error} role="alert" class="alert alert-error py-2 text-sm">
         <span>{@error}</span>
@@ -601,6 +773,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     """
   end
 
+  defp paste_hook, do: @paste_hook
+
   # ── The new-board tile ─────────────────────────────────────────────────
 
   defp new_tile(%{text_open?: true} = assigns) do
@@ -639,7 +813,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     <div
       id={"#{@id}-new"}
       phx-drop-target={if :image in @actions, do: @uploads.quick_image.ref}
-      class="flex aspect-square flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-base-300 p-3 text-base-content/60 transition-colors hover:border-primary/50"
+      class="flex aspect-square flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-base-300 p-3 text-base-content/60 transition-colors hover:border-primary/50 group-focus-within/panel:border-primary/50"
     >
       <button
         :if={:empty in @actions}
@@ -672,25 +846,19 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
           <span :if={@big}>Text</span>
         </button>
 
-        <form
+        <label
           :if={:image in @actions}
-          id={"#{@id}-image"}
-          phx-change="validate_image"
-          phx-target={@myself}
+          for={@uploads.quick_image.ref}
+          title="Start with an image"
+          aria-label="Start with an image"
+          class={[
+            "btn btn-sm btn-outline cursor-pointer",
+            if(@big, do: "gap-1", else: "btn-circle")
+          ]}
         >
-          <label
-            title="Start with an image"
-            aria-label="Start with an image"
-            class={[
-              "btn btn-sm btn-outline cursor-pointer",
-              if(@big, do: "gap-1", else: "btn-circle")
-            ]}
-          >
-            <.icon name="hero-camera" class="h-4 w-4" />
-            <span :if={@big}>Image</span>
-            <.live_file_input upload={@uploads.quick_image} class="hidden" />
-          </label>
-        </form>
+          <.icon name="hero-camera" class="h-4 w-4" />
+          <span :if={@big}>Image</span>
+        </label>
       </div>
 
       <form
@@ -709,6 +877,14 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
           </option>
         </select>
       </form>
+
+      <%!-- Only while the widget has focus, which is when a paste is heard. --%>
+      <p
+        :if={@paste?}
+        class="hidden text-center text-xs leading-tight text-primary group-focus-within/panel:block"
+      >
+        Paste text or an image
+      </p>
 
       <div :for={entry <- @uploads.quick_image.entries} class="flex w-full items-center gap-1 text-xs">
         <progress class="progress progress-primary flex-1" value={entry.progress} max="100"></progress>
@@ -743,13 +919,13 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     ~H"""
     <li
       id={"#{@id}-#{@board.uuid}"}
-      class="group relative flex aspect-square flex-col overflow-hidden rounded-xl border border-base-300 bg-base-100 shadow-sm transition-shadow hover:shadow-md"
+      class="group relative flex aspect-square flex-col rounded-xl border border-base-300 bg-base-100 shadow-sm transition-shadow focus-within:z-30 hover:shadow-md"
     >
       <a
         href={@href}
         target={if @open == :new_tab, do: "_blank"}
         rel={if @open == :new_tab, do: "noopener"}
-        class="relative min-h-0 flex-1 overflow-hidden bg-base-200"
+        class="relative min-h-0 flex-1 overflow-hidden rounded-t-[inherit] bg-base-200"
         tabindex="-1"
         aria-hidden="true"
       >
@@ -834,18 +1010,23 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp tile_menu(assigns) do
     ~H"""
-    <div class="dropdown dropdown-end absolute right-1 top-1 z-10">
+    <%!-- The menu is positioned against the tile (this wrapper is `static`), not
+          the corner button: it spans the tile's width, so on a phone, where a
+          tile is barely wider than the button, it cannot run off the screen.
+          The tile does not clip (`overflow-hidden` would cut the menu off at
+          its edge) and rises above its neighbours while the menu is open. --%>
+    <div class="dropdown dropdown-end !static">
       <button
         type="button"
         tabindex="0"
-        class="btn btn-circle btn-xs border-0 bg-base-100/80 opacity-70 shadow-sm backdrop-blur group-hover:opacity-100 focus:opacity-100"
+        class="btn btn-circle btn-xs absolute right-1 top-1 z-10 border-0 bg-base-100/80 opacity-70 shadow-sm backdrop-blur group-hover:opacity-100 focus:opacity-100"
         aria-label={"Actions for #{@board.name}"}
       >
         <.icon name="hero-ellipsis-horizontal" class="h-4 w-4" />
       </button>
       <ul
         tabindex="0"
-        class="dropdown-content menu menu-sm z-20 w-48 rounded-box border border-base-300 bg-base-100 p-1 shadow"
+        class="dropdown-content menu menu-sm absolute inset-x-1 top-9 z-30 w-auto rounded-box border border-base-300 bg-base-100 p-1 shadow"
       >
         <li :if={@manage?}>
           <button

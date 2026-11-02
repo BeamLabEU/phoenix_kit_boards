@@ -491,6 +491,174 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
     end
   end
 
+  describe "paste" do
+    @png Base.decode64!(
+           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+         )
+
+    defp paste_text(lv, text),
+      do: lv |> with_target("#panel") |> render_hook("paste_text", %{"text" => text})
+
+    defp paste_context(lv, text),
+      do: lv |> with_target("#panel") |> render_hook("paste_context", %{"text" => text})
+
+    test "pasted text becomes a note board that stays on the page", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      html = paste_text(lv, "Call the plumber\nabout the tap")
+
+      assert [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert board.kind == "quick"
+      assert board.name == "Call the plumber"
+      assert html =~ "Board created"
+      # Not opened: the page is still the page.
+      assert has_element?(lv, "#panel")
+    end
+
+    test "each paste is a board of its own", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_text(lv, "one")
+      paste_text(lv, "two")
+
+      assert Boards.count_for_scope(@scope, me.uuid) == 2
+    end
+
+    test "whitespace is not a board", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_text(lv, "  \n \t ")
+
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+    end
+
+    test "Undo removes what the paste made", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_text(lv, "oops")
+      assert Boards.count_for_scope(@scope, me.uuid) == 1
+
+      lv |> element("button[phx-click=undo_paste]") |> render_click()
+
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+      refute has_element?(lv, "button[phx-click=undo_paste]")
+    end
+
+    test "Undo cannot be pointed at some other board", %{conn: conn, me: me} do
+      keep = board!(me, "Keep me")
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_text(lv, "pasted")
+
+      lv |> with_target("#panel") |> render_click("undo_paste", %{"id" => keep.uuid})
+
+      assert Boards.get_board(keep.uuid)
+    end
+
+    test "the notice clears itself", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      html = paste_text(lv, "fleeting")
+      assert html =~ "Board created"
+      [board] = Boards.list_for_scope(@scope, me.uuid)
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel, id: "panel", clear_created: board.uuid)
+      refute render(lv) =~ "Board created"
+    end
+
+    test "a paste on a place the user cannot add to makes nothing", %{conn: conn, me: me} do
+      defmodule NoCreate do
+        def can?(:create, _user, _scope), do: false
+        def can?(_action, _user, _scope), do: true
+      end
+
+      Application.put_env(:phoenix_kit_boards, :authorize, {NoCreate, :can?})
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      paste_text(lv, "nope")
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+    end
+
+    test "paste={false} switches it off: no hook, and the event is ignored", %{conn: conn, me: me} do
+      {:ok, lv, html} = mount_panel(conn, me, paste: false)
+
+      refute html =~ "BoardsPanelPaste"
+      paste_text(lv, "ignored")
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+    end
+
+    test "text is ignored where the widget does not offer notes", %{conn: conn, me: me} do
+      {:ok, lv, html} = mount_panel(conn, me, actions: [:empty, :image])
+
+      assert html =~ ~s(data-paste-text="off")
+      paste_text(lv, "no notes here")
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+    end
+
+    test "the widget is wired for paste, and says what it takes", %{conn: conn, me: me} do
+      {:ok, _lv, html} = mount_panel(conn, me)
+
+      assert html =~ ~s(phx-hook="BoardsPanelPaste")
+      assert html =~ ~s(data-paste="on")
+      assert html =~ ~s(data-paste-images="on")
+      assert html =~ "Paste text or an image"
+    end
+
+    test "the upload input is there while the note form is open", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      lv |> element("button[phx-click=text_open]") |> render_click()
+
+      assert has_element?(lv, "#panel-image input[type=file]")
+    end
+
+    test "several pasted images make ONE board", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_context(lv, "")
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "a.png", content: @png, type: "image/png"},
+          %{name: "b.png", content: @png, type: "image/png"},
+          %{name: "c.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(input, "a.png")
+      render_upload(input, "b.png")
+      assert Boards.count_for_scope(@scope, me.uuid) == 0, "waits for the last file"
+      html = render_upload(input, "c.png")
+
+      assert [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert board.preview["count"] == 3
+      assert html =~ "Board created"
+    end
+
+    test "text that came with the pictures goes on the same board", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_context(lv, "Bathroom tiles")
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "tile.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(input, "tile.png")
+
+      assert [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert board.name == "Bathroom tiles"
+      assert board.preview["count"] == 2
+      assert board.preview["text"] == "Bathroom tiles"
+    end
+
+    test "a dropped picture is not announced as a paste", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "d.png", content: @png, type: "image/png"}
+        ])
+
+      html = render_upload(input, "d.png")
+
+      assert Boards.count_for_scope(@scope, me.uuid) == 1
+      refute html =~ "Board created"
+    end
+  end
+
   describe "row actions" do
     test "rename", %{conn: conn, me: me} do
       board = board!(me, "Old name")

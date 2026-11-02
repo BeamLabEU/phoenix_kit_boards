@@ -152,7 +152,7 @@ defmodule PhoenixKitBoards.StaleListTest do
              "their board does not have these shapes — it is why they left " <>
                "them out — so they arrive as new ones"
 
-      assert src =~ "|> tell_sender_about_restored(restored, annotations)"
+      assert src =~ "|> tell_sender_about_restored(restored, merged)"
     end
 
     test "and the arrivals are forgotten once they have been mentioned" do

@@ -86,6 +86,125 @@ defmodule PhoenixKitBoards.Quick do
     end
   end
 
+  @doc """
+  Makes ONE board out of everything that was pasted or dropped together: any
+  number of images (`files`, each `{path, entry}`) and an optional note.
+
+  A lone note or a lone image is exactly `create_note/4` / `create_image/5`.
+  Anything else lays the pieces out on the canvas: the note across the top and
+  the pictures in a grid under it, each as large as its cell allows. As with a
+  single image, if any file cannot be stored the half-made board is removed.
+
+  `{:error, :empty}` when there is neither.
+  """
+  @spec create_collection(
+          Boards.scope(),
+          String.t(),
+          [{String.t(), map()}],
+          String.t() | nil,
+          keyword()
+        ) :: {:ok, PhoenixKitBoards.Board.t()} | {:error, term()}
+  def create_collection(scope, user_uuid, files, text, opts \\ []) do
+    note = normalize_note(text || "")
+
+    case {files, note} do
+      {[], ""} -> {:error, :empty}
+      {[], note} -> create_note(scope, user_uuid, note, opts)
+      {[{path, entry}], ""} -> create_image(scope, user_uuid, path, entry, opts)
+      _ -> create_many(scope, user_uuid, files, note, opts)
+    end
+  end
+
+  defp create_many(scope, user_uuid, files, note, opts) do
+    name = if note == "", do: image_name(elem(hd(files), 1)), else: note_name(note)
+
+    with {:ok, board} <- create(scope, user_uuid, name, opts) do
+      case store_all(files, user_uuid, board) do
+        {:ok, stored} ->
+          case put_shapes(board, layout(stored, note)) do
+            {:ok, _canvas, board} -> {:ok, board}
+            {:error, _} = error -> discard(board, error)
+          end
+
+        {:error, _} = error ->
+          discard(board, error)
+      end
+    end
+  end
+
+  defp store_all(files, user_uuid, board) do
+    Enum.reduce_while(files, {:ok, []}, fn {path, entry}, {:ok, acc} ->
+      with {:ok, checksum} <- Uploads.file_checksum(path),
+           {:ok, file} <- Uploads.store(path, user_uuid, checksum, entry, board),
+           url when is_binary(url) <- Storage.get_public_url(file) do
+        {:cont, {:ok, [{file, url} | acc]}}
+      else
+        nil -> {:halt, {:error, :no_url_for_stored_file}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
+  end
+
+  # The room on the canvas for a collection, with a margin all round.
+  @margin 500
+  @gap 400
+
+  @doc false
+  # `stored` is `[{file, url}]`; `note` is already normalised ("" for none).
+  # Public so the arrangement can be tested without storage or a database.
+  def layout(stored, note) do
+    {canvas_w, canvas_h} = Boards.canvas_size()
+
+    {note_shapes, top} =
+      case note do
+        "" ->
+          {[], @margin}
+
+        text ->
+          shape = note_shape(text)
+          %{"w" => w, "h" => h} = shape["geometry"]
+          placed = put_geometry(shape, round((canvas_w - w) / 2), @margin)
+          # A very long note must not leave the pictures no room.
+          {[placed], min(@margin + h + @gap, round(canvas_h * 0.55))}
+      end
+
+    count = length(stored)
+    cols = columns(count)
+    rows = div(count + cols - 1, cols)
+    cell_w = (canvas_w - 2 * @margin) / cols
+    cell_h = (canvas_h - top - @margin) / rows
+    box = {cell_w - @gap, cell_h - @gap}
+
+    pictures =
+      stored
+      |> Enum.with_index()
+      |> Enum.map(fn {{file, url}, index} ->
+        shape = image_shape(file, url, box)
+        %{"w" => w, "h" => h} = shape["geometry"]
+        col = rem(index, cols)
+        row = div(index, cols)
+
+        put_geometry(
+          shape,
+          round(@margin + col * cell_w + (cell_w - w) / 2),
+          round(top + row * cell_h + (cell_h - h) / 2)
+        )
+      end)
+
+    note_shapes ++ pictures
+  end
+
+  defp columns(count) when count <= 3, do: count
+  defp columns(4), do: 2
+  defp columns(_), do: 3
+
+  defp put_geometry(shape, x, y),
+    do: update_in(shape, ["geometry"], &Map.merge(&1, %{"x" => x, "y" => y}))
+
   defp fill_with_image(board, path, user_uuid, entry) do
     with {:ok, shape} <- store_and_place(path, user_uuid, entry, board),
          {:ok, _canvas, board} <- put_shapes(board, [shape]) do
@@ -165,9 +284,9 @@ defmodule PhoenixKitBoards.Quick do
   end
 
   @doc false
-  def image_shape(file, url) do
+  def image_shape(file, url, box \\ @image_box) do
     {canvas_w, canvas_h} = Boards.canvas_size()
-    {w, h} = fit(file, @image_box)
+    {w, h} = fit(file, box)
 
     %{
       "kind" => "image",
@@ -192,7 +311,7 @@ defmodule PhoenixKitBoards.Quick do
     {max(round(w * scale), 1), max(round(h * scale), 1)}
   end
 
-  defp fit(_file, {box_w, box_h}), do: {box_w, box_h}
+  defp fit(_file, {box_w, box_h}), do: {round(box_w), round(box_h)}
 
   # Hard-wrapped: point text does not wrap, so a pasted paragraph would run off
   # the canvas as one line.

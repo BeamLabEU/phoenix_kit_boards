@@ -430,6 +430,101 @@ defmodule PhoenixKitBoards.Boards do
     end
   end
 
+  @doc """
+  Apply one edit to the board as it is stored NOW, not as the editor last saw it.
+
+  `base` is the list the editor started from and `incoming` the one it ended
+  with; only the difference between them — the shapes it created, changed,
+  deleted or reordered — is applied, under a row lock, to whatever the row holds
+  once the lock is taken. Two editors saving at once therefore both land,
+  instead of the later write replacing the earlier one with its own whole list.
+
+  Returns `{:ok, canvas, board, merged, delta}`: the stored list after the edit
+  and the delta that was applied, which is what peers should be sent.
+  """
+  def apply_edit(%Board{uuid: uuid} = board, base, incoming)
+      when is_list(base) and is_list(incoming) do
+    delta = diff(base, incoming)
+
+    result =
+      repo().transaction(fn ->
+        case repo().one(from(b in Board, where: b.uuid == ^uuid, lock: "FOR UPDATE")) do
+          nil ->
+            repo().rollback(:not_found)
+
+          %Board{} = row ->
+            canvas = load_canvas(row)
+            merged = apply_delta(annotations(canvas), delta)
+            canvas = put_annotations(canvas, merged)
+
+            case row
+                 |> Board.data_changeset(canvas_to_map(canvas))
+                 |> Ecto.Changeset.put_change(:preview, preview_from(merged))
+                 |> repo().update() do
+              {:ok, saved} -> {canvas, saved, merged}
+              {:error, reason} -> repo().rollback(reason)
+            end
+        end
+      end)
+
+    case result do
+      {:ok, {canvas, saved, merged}} ->
+        if saved.preview != board.preview, do: announce(saved)
+        {:ok, canvas, saved, merged, delta}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  The list after applying `delta` to `list`.
+
+  Idempotent, so a delta that is already in `list` (an editor hearing about its
+  own save, or one arriving twice) changes nothing: a shape is created or
+  replaced by uuid, a delete of a missing shape is ignored, and an update to a
+  shape somebody has since deleted does not bring it back. The delta's `order`
+  is imposed on the shapes it names, in the slots those shapes already occupy,
+  so shapes it has never heard of stay where they are.
+  """
+  def apply_delta(list, delta) when is_list(list) do
+    deleted = MapSet.new(delta["deleted"] || [])
+    present = list |> uuid_order() |> MapSet.new()
+    updates = index_by_uuid(delta["updated"] || [])
+    creates = delta["created"] || []
+
+    kept =
+      for shape <- list, not MapSet.member?(deleted, shape["uuid"]) do
+        Map.get(updates, shape["uuid"], shape)
+      end
+
+    {replaced, fresh} = Enum.split_with(creates, &MapSet.member?(present, &1["uuid"]))
+    replacements = index_by_uuid(replaced)
+
+    (Enum.map(kept, &Map.get(replacements, &1["uuid"], &1)) ++ fresh)
+    |> impose_order(delta["order"] || [])
+  end
+
+  defp impose_order(list, []), do: list
+
+  defp impose_order(list, order) do
+    rank = order |> Enum.with_index() |> Map.new()
+    named = Enum.filter(list, &Map.has_key?(rank, &1["uuid"]))
+    sorted = Enum.sort_by(named, &Map.fetch!(rank, &1["uuid"]))
+
+    {out, _} =
+      Enum.map_reduce(list, sorted, fn shape, remaining ->
+        if Map.has_key?(rank, shape["uuid"]) do
+          [next | rest] = remaining
+          {next, rest}
+        else
+          {shape, remaining}
+        end
+      end)
+
+    out
+  end
+
   @preview_text 140
 
   @doc """
@@ -485,6 +580,79 @@ defmodule PhoenixKitBoards.Boards do
   def put_annotations(%Fresco.Canvas{} = canvas, list) when is_list(list) do
     Fresco.Canvas.put_extension(canvas, "etcher", %{"version" => "1", "annotations" => list})
   end
+
+  # ── Shape-list diff and merge (by uuid) ─────────────────────────────────────
+
+  # Position in the annotation list *is* z-order — etcher paints in array
+  # order — so the diff has to treat a reshuffle as a real change. Keying
+  # purely by uuid made a pure reorder look identical to no edit at all:
+  # `empty_delta?` returned true, so bringing a caption in front of an image
+  # was never saved and never reached the other viewers.
+  #
+  # `order` carries the full uuid list on every delta, not just reorders. The
+  # client applies created/updated/deleted by removing and re-adding shapes,
+  # and re-adding appends — which would scramble layering on any edit at all.
+  # Re-imposing the authoritative order afterwards makes that self-correcting.
+  @doc false
+  # Public so the delta rules can be tested directly — this is where a
+  # silently-dropped reorder would hide, and the suite runs without a DB.
+  def diff(old, new) do
+    old_by = index_by_uuid(old)
+    new_by = index_by_uuid(new)
+    old_ids = MapSet.new(Map.keys(old_by))
+    new_ids = MapSet.new(Map.keys(new_by))
+
+    created = new_ids |> MapSet.difference(old_ids) |> Enum.map(&Map.get(new_by, &1))
+    deleted = old_ids |> MapSet.difference(new_ids) |> MapSet.to_list()
+
+    updated =
+      old_ids
+      |> MapSet.intersection(new_ids)
+      |> Enum.map(&Map.get(new_by, &1))
+      |> Enum.filter(fn s -> s != Map.get(old_by, s["uuid"]) end)
+
+    %{
+      "created" => created,
+      "updated" => updated,
+      "deleted" => deleted,
+      "order" => uuid_order(new),
+      # Compared over the shapes present in both, so a create or delete
+      # doesn't masquerade as a reorder — those are already reported above.
+      "reordered" => reordered?(old, new)
+    }
+  end
+
+  defp uuid_order(list) do
+    for %{"uuid" => uuid} <- list, is_binary(uuid), do: uuid
+  end
+
+  defp reordered?(old, new) do
+    old_ids = old |> uuid_order() |> MapSet.new()
+    new_ids = new |> uuid_order() |> MapSet.new()
+    survivors = MapSet.intersection(old_ids, new_ids)
+
+    kept = fn list -> list |> uuid_order() |> Enum.filter(&MapSet.member?(survivors, &1)) end
+
+    kept.(old) != kept.(new)
+  end
+
+  defp index_by_uuid(list) do
+    Enum.reduce(list, %{}, fn
+      %{"uuid" => uuid} = shape, acc when is_binary(uuid) -> Map.put(acc, uuid, shape)
+      _other, acc -> acc
+    end)
+  end
+
+  @doc false
+  def empty_delta?(%{
+        "created" => [],
+        "updated" => [],
+        "deleted" => [],
+        "reordered" => false
+      }),
+      do: true
+
+  def empty_delta?(_), do: false
 
   # ── internals ─────────────────────────────────────────────────────────────
 

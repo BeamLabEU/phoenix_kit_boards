@@ -187,9 +187,11 @@ annotations and deferred image storage, and every five seconds while idle.
 
 **Echo suppression is server-side**, via `when from == self()` guards on each
 `handle_info/2` clause. Editing re-emits the *entire* annotation list
-(`etcher:annotations-changed`); the LiveView diffs it, persists, and broadcasts,
-and peers apply the delta without remounting the canvas — an unchanged list
-diffs to empty, so no work happens.
+(`etcher:annotations-changed`); the LiveView diffs it against the list it last
+held, applies that change to the stored row under a lock (`Boards.apply_edit/3`),
+and broadcasts the delta after it is stored. Peers apply it to their own list
+and push the effective change without remounting the canvas — a delta that is
+already applied changes nothing.
 
 Cursors are sent in canvas coordinates rather than screen pixels so they track
 each viewer's own pan and zoom.

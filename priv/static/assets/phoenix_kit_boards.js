@@ -205,6 +205,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
   // peer edits. We drive changes through `window.Etcher.layerFor(id)` so the
   // canvas never remounts. `addShape` re-emits `annotations-changed`, but the
   // server treats an unchanged list as a no-op, so applying doesn't echo back.
+  // Longer than the server's own budget for a page and its picture, so the
+  // server's answer — an error included — is the one that normally arrives.
+  const UNFURL_TIMEOUT_MS = 25000;
+
   const BoardSync = {
     mounted() {
       this.frescoId = this.el.dataset.frescoId;
@@ -257,6 +261,10 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // The ephemeral channel — cursors and in-flight drags.
       this.handleEvent("board:channel", (info) => this.openLink(info));
 
+      this.handleEvent("board:unfurled", (reply) => {
+        const settle = this.unfurls && this.unfurls[reply && reply.ref];
+        if (settle) settle(reply);
+      });
       this.handleEvent("board:image-uploaded", ({ url }) => this.settleUpload(null, url));
       this.handleEvent("board:image-upload-failed", ({ reason }) =>
         this.settleUpload(reason || "upload failed"),
@@ -281,6 +289,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       });
 
       this.armEditing();
+      this.rememberView();
 
       // Tell the server this hook can hear it — and only now.
       //
@@ -299,6 +308,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
     },
 
     destroyed() {
+      // Nobody is left to hear a preview that is still being fetched.
+      Object.values(this.unfurls || {}).forEach((settle) => settle({ error: "board closed" }));
+      this.flushView();
+      (this.viewOff || []).forEach((off) => typeof off === "function" && off());
+      this.viewOff = [];
+      if (this.onHide) window.removeEventListener("pagehide", this.onHide);
       if (this.onPrefs) this.el.removeEventListener("etcher:prefs-changed", this.onPrefs);
       if (this._armTimer) {
         clearTimeout(this._armTimer);
@@ -314,6 +329,79 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       Object.keys(this.ghostTimers || {}).forEach((id) => this.retireGhost(id));
       // The link outlives the DOM otherwise — see `BoardCursors.destroyed`.
       BoardLink.close(this.frescoId);
+    },
+
+    // Where this person was looking on this board, so coming back puts them
+    // there instead of at the opening view.
+    //
+    // Kept in this browser, under the board's id: it is a convenience that
+    // changes on every scroll of the wheel, so it is not worth a write to the
+    // server each time, and a board opened on a phone has different business
+    // being framed the way the desktop had it. Stored as the visible canvas
+    // rectangle, which `fitBounds` turns back into a view of any window size.
+    //
+    // Restored first and only then watched, so the opening view that a board
+    // has before the restore is never taken for something the person chose.
+    rememberView() {
+      const boardId = this.el.dataset.boardId;
+      if (!boardId || !window.Fresco || typeof window.Fresco.onReady !== "function") return;
+      this.viewKey = `phoenix_kit_boards:view:${boardId}`;
+      this.viewOff = [];
+      // A tab closed right after a pan never reaches the debounce.
+      this.onHide = () => this.flushView();
+      window.addEventListener("pagehide", this.onHide);
+
+      window.Fresco.onReady(this.frescoId, (handle) => {
+        this.viewHandle = handle;
+        const settled =
+          typeof handle.whenLayoutSettled === "function"
+            ? handle.whenLayoutSettled()
+            : Promise.resolve();
+
+        Promise.resolve(settled).then(() => {
+          if (this.viewHandle !== handle || this.viewWatching) return;
+          const saved = this.readView();
+          if (saved) handle.fitBounds(saved);
+
+          this.viewWatching = true;
+          ["pan", "zoom", "update-viewport"].forEach((name) => {
+            this.viewOff.push(handle.on(name, () => this.scheduleViewSave()));
+          });
+        });
+      });
+    },
+
+    readView() {
+      try {
+        const v = JSON.parse(localStorage.getItem(this.viewKey) || "null");
+        const ok = v && [v.x, v.y, v.width, v.height].every(Number.isFinite);
+        return ok && v.width > 0 && v.height > 0 ? v : null;
+      } catch (_e) {
+        return null;
+      }
+    },
+
+    scheduleViewSave() {
+      clearTimeout(this.viewTimer);
+      this.viewTimer = setTimeout(() => this.flushView(), 300);
+    },
+
+    flushView() {
+      clearTimeout(this.viewTimer);
+      this.viewTimer = null;
+      if (!this.viewWatching || !this.viewHandle || !this.viewKey) return;
+      try {
+        const b = this.viewHandle.getViewportBounds();
+        if ([b.x, b.y, b.width, b.height].every(Number.isFinite) && b.width > 0 && b.height > 0) {
+          localStorage.setItem(
+            this.viewKey,
+            JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height })
+          );
+        }
+      } catch (_e) {
+        // Storage can be full or refused (private windows); the view just is
+        // not remembered.
+      }
     },
 
     // Open the ephemeral channel and start streaming drags over it.
@@ -566,20 +654,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
           layer.setImageUploader((file, ctx) => this.uploadImage(file, ctx));
         }
 
-        // Pasted URLs become preview cards. Unlike uploads this is a plain
-        // request/response, so `pushEvent`'s reply callback carries it — no
-        // queue, no ordering to keep straight.
+        // Pasted URLs become preview cards. The server fetches the page off
+        // to the side and answers with a `board:unfurled` event naming the
+        // `ref` it was asked under, so a slow site holds up nothing else.
+        // The answer carries the card as SVG — Etcher rasterises it.
         if (typeof layer.setLinkUnfurler === "function") {
-          layer.setLinkUnfurler(
-            (url) =>
-              new Promise((resolve, reject) => {
-                // The reply carries the card as SVG — Etcher rasterises it.
-                this.pushEvent("board:unfurl", { url }, (reply) => {
-                  if (reply && reply.svg) resolve(reply);
-                  else reject((reply && reply.error) || "unfurl failed");
-                });
-              }),
-          );
+          layer.setLinkUnfurler((url) => this.unfurl(url));
         }
         return;
       }
@@ -588,6 +668,29 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // retrying forever would just leak a timer.
       if (attempt >= 60) return;
       this._armTimer = setTimeout(() => this.armEditing(attempt + 1), 50);
+    },
+
+    // One paste → one round trip, paired by `ref`. Gives up on its own: a
+    // server that never answers must not leave the pasted link waiting.
+    unfurl(url) {
+      this.unfurls = this.unfurls || {};
+      const ref = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          delete this.unfurls[ref];
+          reject("unfurl timed out");
+        }, UNFURL_TIMEOUT_MS);
+
+        this.unfurls[ref] = (reply) => {
+          clearTimeout(timer);
+          delete this.unfurls[ref];
+          if (reply && reply.svg) resolve(reply);
+          else reject((reply && reply.error) || "unfurl failed");
+        };
+
+        this.pushEvent("board:unfurl", { url, ref });
+      });
     },
 
     apply(delta) {
