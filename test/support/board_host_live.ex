@@ -26,5 +26,7 @@ defmodule PhoenixKitBoards.Test.BoardHostLive do
   @impl true
   defdelegate handle_info(message, socket), to: BoardLive
   @impl true
+  defdelegate handle_async(name, result, socket), to: BoardLive
+  @impl true
   defdelegate terminate(reason, socket), to: BoardLive
 end

@@ -17,7 +17,18 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     owner = user_fixture()
     other = user_fixture()
     {:ok, board} = Quick.create_note({"project", "access"}, owner.uuid, "Original")
-    on_exit(fn -> Application.delete_env(:phoenix_kit_boards, :authorize) end)
+
+    # The test database's bucket writes under a RELATIVE path, i.e. into this
+    # repository. Point it at a temp directory for the length of the test (the
+    # update is rolled back with the sandbox).
+    root = Path.join(System.tmp_dir!(), "boards_access_media_#{System.unique_integer([:positive])}")
+    Repo.update_all("phoenix_kit_buckets", set: [endpoint: root])
+
+    on_exit(fn ->
+      Application.delete_env(:phoenix_kit_boards, :authorize)
+      File.rm_rf(root)
+    end)
+
     %{owner: owner, other: other, board: board}
   end
 
@@ -52,7 +63,7 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
   test "a revoked viewer receives no subsequent peer annotations", ctx do
     {:ok, lv, _} = open(ctx.board, ctx.other)
     Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
-    send(lv.pid, {:board_annotations, [Quick.note_shape("Secret")], self()})
+    send(lv.pid, {:board_delta, %{"created" => [Quick.note_shape("Secret")]}, self()})
     assert_redirect(lv, "/projects")
   end
 
@@ -67,5 +78,138 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     {:ok, lv, _} = open(ctx.board, ctx.other)
     {:ok, _} = Boards.delete_board(ctx.board)
     assert_redirect(lv, "/projects")
+  end
+
+  describe "cursor:move over the LiveView fallback" do
+    setup ctx do
+      {:ok, lv, _} = open(ctx.board, ctx.owner)
+      PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{ctx.board.uuid}")
+      %{lv: lv}
+    end
+
+    test "relays numeric coordinates to peers", %{lv: lv} do
+      render_hook(lv, "cursor:move", %{"x" => 10, "y" => 20.5})
+      assert_receive {:board_cursor, _id, 10, 20.5, _meta, _from}
+    end
+
+    test "drops coordinates that are not numbers", %{lv: lv} do
+      render_hook(lv, "cursor:move", %{"x" => "<img onerror=1>", "y" => 5})
+      render_hook(lv, "cursor:move", %{"x" => 5, "y" => nil})
+      refute_receive {:board_cursor, _, _, _, _, _}, 100
+    end
+  end
+
+  describe "board:unfurl" do
+    test "answers later, as an event naming the ref, so the board is not held meanwhile", ctx do
+      {:ok, lv, _} = open(ctx.board, ctx.owner)
+
+      # A loopback address is refused by the fetch guard, so this needs no network.
+      render_hook(lv, "board:unfurl", %{"url" => "http://127.0.0.1/", "ref" => "r1"})
+
+      assert_push_event(lv, "board:unfurled", %{"ref" => "r1", "error" => _})
+    end
+
+    test "a client without a ref still gets its reply to the push", ctx do
+      {:ok, lv, _} = open(ctx.board, ctx.owner)
+
+      render_hook(lv, "board:unfurl", %{"url" => "http://127.0.0.1/"})
+      assert_reply(lv, %{"error" => _})
+    end
+
+    test "something that is not a link is refused", ctx do
+      {:ok, lv, _} = open(ctx.board, ctx.owner)
+
+      render_hook(lv, "board:unfurl", %{"url" => 5})
+      assert_reply(lv, %{"error" => "bad_request"})
+    end
+  end
+
+  describe "who is online" do
+    defp online(lv), do: lv |> render() |> then(&Regex.run(~r/(\d+)\s+online/, &1)) |> List.last()
+
+    test "a viewer who leaves cleanly is dropped", ctx do
+      {:ok, first, _} = open(ctx.board, ctx.owner)
+      {:ok, second, _} = open(ctx.board, ctx.other)
+      assert online(first) == "2"
+
+      GenServer.stop(second.pid, :normal)
+      assert eventually(fn -> online(first) == "1" end)
+    end
+
+    # Opens a viewer and returns the pid of the LiveView itself, learned from
+    # the join it broadcasts. The test process traps exits so that killing the
+    # viewer, which the test client is linked to, does not kill the test.
+    defp open_watching(board, user) do
+      Process.flag(:trap_exit, true)
+      PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{board.uuid}")
+      {:ok, _lv, _} = open(board, user)
+      assert_receive {:board_join, _me, channel_pid}, 5_000
+      channel_pid
+    end
+
+    test "a viewer whose connection is killed is dropped too", ctx do
+      {:ok, first, _} = open(ctx.board, ctx.owner)
+      channel = open_watching(ctx.board, ctx.other)
+      assert online(first) == "2"
+
+      # No terminate/2, so no leave message: only watching the process can
+      # notice this.
+      Process.exit(channel, :kill)
+      assert eventually(fn -> online(first) == "1" end)
+    end
+
+    test "a viewer who reloads shows once, not twice", ctx do
+      {:ok, first, _} = open(ctx.board, ctx.owner)
+      channel = open_watching(ctx.board, ctx.other)
+      Process.exit(channel, :kill)
+      {:ok, _again, _} = open(ctx.board, ctx.other)
+
+      assert eventually(fn -> online(first) == "2" end)
+    end
+
+    defp eventually(fun, tries \\ 40) do
+      cond do
+        fun.() -> true
+        tries == 0 -> false
+        true -> Process.sleep(25) && eventually(fun, tries - 1)
+      end
+    end
+  end
+
+  describe "opening a board that still carries embedded images" do
+    @png "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+    test "tells the room, so nobody writes the embedded copy back", ctx do
+      shape = %{
+        "uuid" => "img1",
+        "kind" => "image",
+        "geometry" => %{"x" => 0, "y" => 0, "href" => "data:image/png;base64," <> @png}
+      }
+
+      {:ok, _, _, _, _} =
+        Boards.apply_edit(ctx.board, Boards.annotations(Boards.load_canvas(ctx.board)), [shape])
+
+      PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{ctx.board.uuid}")
+
+      {:ok, lv, _} = open(ctx.board, ctx.owner)
+
+      assert_receive {:board_delta, %{"updated" => [%{"uuid" => "img1"} = moved]}, _from}, 5_000
+      refute moved["geometry"]["href"] =~ "data:"
+
+      # And what is stored agrees with what was said.
+      stored =
+        ctx.board.uuid |> Boards.get_board() |> Boards.load_canvas() |> Boards.annotations()
+
+      assert [%{"geometry" => %{"href" => href}}] = stored
+      assert href == moved["geometry"]["href"]
+      assert render(lv) =~ "board-root"
+    end
+
+    test "says nothing when there is nothing to move", ctx do
+      PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{ctx.board.uuid}")
+      {:ok, _lv, _} = open(ctx.board, ctx.owner)
+
+      refute_receive {:board_delta, _, _}, 200
+    end
   end
 end

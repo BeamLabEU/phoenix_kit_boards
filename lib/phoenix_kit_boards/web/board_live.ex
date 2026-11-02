@@ -6,10 +6,13 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   real-time channels over one PubSub topic (`phoenix_kit_boards:<id>`):
 
     * **Shapes** — the client emits `etcher:annotations-changed` (full list) on
-      every edit; we diff, persist, and broadcast. Peers diff against their own
-      state and push a create/update/delete delta to `BoardSync`, which applies
-      it via `window.Etcher.layerFor(id)` — no canvas remount. Echo is broken
-      server-side (an unchanged list diffs to empty).
+      every edit. We take what changed against the list we last held, apply it
+      to the stored board under a row lock (`Boards.apply_edit/3`, so two
+      editors saving at once both land), and broadcast that delta once it is
+      stored. Peers apply it to their own list and push the create/update/delete
+      to `BoardSync`, which applies it via `window.Etcher.layerFor(id)` — no
+      canvas remount. Echo is broken server-side (a delta already applied
+      changes nothing).
     * **Presence** — a roster of who's viewing, via join/hello/leave messages.
     * **Cursors** — pointer positions in *canvas* coordinates, so each viewer
       maps them through their own pan/zoom (`BoardCursors`).
@@ -162,11 +165,15 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp back_to(_action, _params), do: Paths.boards()
 
   defp open_board(board, socket) do
-    {board, canvas} = migrate_embedded_images(board, socket)
+    {board, canvas, migrated} = migrate_embedded_images(board, socket)
     me = identity(socket)
     topic = topic(board.uuid)
 
     PubSubHelper.subscribe(topic)
+    # Told to the room like any other edit: whoever already has the board open
+    # is holding the embedded copies, and would write them straight back the
+    # next time they touched one of those shapes.
+    if migrated, do: broadcast(topic, {:board_delta, migrated, self()})
     broadcast(topic, {:board_join, me, self()})
 
     {:ok,
@@ -218,10 +225,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
      )
      # Deliberately nothing pushed here. See `handle_event("board:ready")`.
      |> assign(:peers, %{})
+     |> assign(:peer_monitors, %{})
+     |> assign(:unfurls, %{})
      |> watch_access()}
   end
 
   @access_check_ms 5_000
+
+  # Link previews in flight at once for one viewer. Each holds a connection to
+  # somebody else's server for seconds, so a paste of fifty links is not fifty
+  # of them.
+  @max_unfurls 3
 
   defp watch_access(%{assigns: %{live_action: :user}} = socket) do
     Process.send_after(self(), :board_access_check, @access_check_ms)
@@ -232,7 +246,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       _event, _params, socket -> access_hook(socket)
     end)
     |> attach_hook(:board_access, :handle_info, fn
-      {:board_annotations, _, _}, socket -> access_hook(socket)
+      {:board_delta, _, _}, socket -> access_hook(socket)
       {:store_board_image, _}, socket -> access_hook(socket)
       _message, socket -> {:cont, socket}
     end)
@@ -274,19 +288,19 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
     case hoist_embedded_images(annotations, board, socket) do
       {_annotations, []} ->
-        {board, canvas}
+        {board, canvas, nil}
 
       {hoisted, moved} ->
         Logger.info("[boards] moved #{length(moved)} embedded image(s) into storage")
 
-        case Boards.save_annotations(board, canvas, hoisted) do
-          {:ok, canvas, board} ->
-            {board, canvas}
+        case Boards.apply_edit(board, annotations, hoisted) do
+          {:ok, canvas, board, _merged, delta} ->
+            {board, canvas, delta}
 
           {:error, reason} ->
             # The board still works, it is just still heavy.
             Logger.warning("[boards] could not save the migrated board: #{inspect(reason)}")
-            {board, canvas}
+            {board, canvas, nil}
         end
     end
   end
@@ -524,6 +538,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     })
   end
 
+  # Peers' changes this save folded in before their own messages reached us.
+  defp tell_sender_about_peers(socket, delta, annotations) do
+    if empty_delta?(delta) do
+      socket
+    else
+      socket
+      |> note_peer_arrivals(delta["created"])
+      |> push_event("board:apply", Map.put(delta, "order", uuid_order(annotations)))
+    end
+  end
+
   defp tell_sender_about_hoisted(socket, [], _annotations), do: socket
 
   defp tell_sender_about_hoisted(socket, hoisted, annotations) do
@@ -700,33 +725,33 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       # screen and the board disagree until their next edit.
       {:noreply, tell_sender_about_restored(socket, restored, socket.assigns.annotations)}
     else
-      # Told to the room before it is written down.
-      #
-      # Saving means encoding the whole board and writing it back, which on a
-      # large one is not quick — and this ran first, so every peer waited out
-      # a database round trip before seeing an edit that was already decided.
-      # Nothing in the message depends on the result, so the wait bought them
-      # nothing.
-      #
-      # A save that then fails leaves peers holding an edit that was not
-      # stored, which the flash below reports and the next successful save
-      # corrects. Being a moment optimistic is a better trade than making
-      # every collaborator wait on the disk.
       # Any image still carrying its bytes goes to storage first, so what is
-      # broadcast, stored and re-sent from here on is a URL.
+      # stored and sent from here on is a URL.
       {annotations, hoisted} = hoist_embedded_images(incoming, socket.assigns.board, socket)
 
-      broadcast(socket.assigns.topic, {:board_annotations, annotations, self()})
+      # Saved as a change to the row, not as this editor's whole list: the
+      # list went out of date the moment a peer saved after we last heard from
+      # them, and writing it back erased their work. The edit is applied to
+      # what is stored under a row lock, so concurrent saves queue up and all
+      # land, and the room hears about it only once it is stored — in the order
+      # it was stored.
+      case Boards.apply_edit(socket.assigns.board, socket.assigns.annotations, annotations) do
+        {:ok, canvas, board, merged, delta} ->
+          broadcast(socket.assigns.topic, {:board_delta, delta, self()})
 
-      case Boards.save_annotations(socket.assigns.board, socket.assigns.canvas, annotations) do
-        {:ok, canvas, board} ->
+          # What this editor's own canvas shows is its list plus the edit; if
+          # the stored board has moved on past that, it lacks the difference.
+          expected = Boards.apply_delta(socket.assigns.annotations, delta)
+          catch_up = diff(expected, merged)
+
           {:noreply,
            socket
            |> assign(:board, board)
            |> assign(:canvas, canvas)
-           |> assign(:annotations, annotations)
-           |> tell_sender_about_hoisted(hoisted, annotations)
-           |> tell_sender_about_restored(restored, annotations)}
+           |> assign(:annotations, merged)
+           |> tell_sender_about_hoisted(hoisted, merged)
+           |> tell_sender_about_restored(restored, merged)
+           |> tell_sender_about_peers(catch_up, merged)}
 
         {:error, _reason} ->
           {:noreply, put_flash(socket, :error, "Could not save the board.")}
@@ -742,16 +767,39 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # entry exists at all.
   def handle_event("board_image_selected", _params, socket), do: {:noreply, socket}
 
-  # A pasted URL. Renders a preview card as an SVG and replies with it; the
+  # A pasted URL. Renders a preview card as an SVG and answers with it; the
   # client rasterises that, sends it back through the image-upload path
-  # above, and swaps the pasted text for the stored card. Replying with an
-  # error is not a failure path worth shouting about — without an answer
-  # Etcher simply leaves the link on the canvas as text.
+  # above, and swaps the pasted text for the stored card. An error answer is
+  # not a failure path worth shouting about — without one Etcher simply leaves
+  # the link on the canvas as text.
+  #
+  # Fetched in a task, not in this process. The fetch can run for its whole
+  # budget (several seconds on a slow site), and a LiveView handles one
+  # message at a time: for that long this person's edits, their cursor and
+  # everything their peers sent them waited behind a web page. The answer
+  # comes back as a `board:unfurled` event carrying the client's `ref`, which
+  # is how it pairs it with the paste that asked.
   #
   # Rescued rather than trusted to return: the whole point of the fallback is
   # that a bad link costs the user nothing, and an unhandled raise anywhere
   # in the fetch/parse/render chain would instead take the board down and
   # make them reconnect. Untrusted input reaches every step of it.
+  def handle_event("board:unfurl", %{"url" => url, "ref" => ref}, socket)
+      when is_binary(url) and is_binary(ref) and byte_size(ref) in 1..64 do
+    if map_size(socket.assigns.unfurls) >= @max_unfurls do
+      {:noreply, push_event(socket, "board:unfurled", %{"ref" => ref, "error" => "busy"})}
+    else
+      task = {:unfurl, ref}
+
+      {:noreply,
+       socket
+       |> assign(:unfurls, Map.put(socket.assigns.unfurls, ref, true))
+       |> start_async(task, fn -> unfurl_reply(url) end)}
+    end
+  end
+
+  # A client that predates the `ref` waits on a reply to the push itself, so
+  # it still gets one — at the old price of holding this process.
   def handle_event("board:unfurl", %{"url" => url}, socket) when is_binary(url) do
     {:reply, unfurl_reply(url), socket}
   end
@@ -828,7 +876,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # of their own because both are facts about this person's cursor — separate
   # streams would race with this one and show the wrong thing for a moment on
   # every change.
-  def handle_event("cursor:move", %{"x" => x, "y" => y} = params, socket) do
+  #
+  # Numbers only. This arrives from a browser and is relayed to every peer,
+  # whose cursor layer does arithmetic on it — the channel path already
+  # refuses anything else, and this one has to as well.
+  def handle_event("cursor:move", %{"x" => x, "y" => y} = params, socket)
+      when is_number(x) and is_number(y) do
     meta = %{pointer: params["pointer"] == true, tool: cursor_tool(params["tool"])}
 
     broadcast(
@@ -871,6 +924,20 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp elem_or(reason) when is_tuple(reason), do: elem(reason, 0)
   defp elem_or(reason), do: reason
 
+  @impl true
+  def handle_async({:unfurl, ref}, result, socket) do
+    reply =
+      case result do
+        {:ok, reply} -> reply
+        {:exit, _reason} -> %{"error" => "unfurl_failed"}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:unfurls, Map.delete(socket.assigns.unfurls, ref))
+     |> push_event("board:unfurled", Map.put(reply, "ref", ref))}
+  end
+
   # ── Remote events (peer → server → client) ────────────────────────────────
 
   @impl true
@@ -890,21 +957,23 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     {:noreply, socket}
   end
 
-  def handle_info({:board_annotations, _incoming, from}, socket) when from == self(),
+  def handle_info({:board_delta, _delta, from}, socket) when from == self(),
     do: {:noreply, socket}
 
-  def handle_info({:board_annotations, incoming, _from}, socket) do
-    delta = diff(socket.assigns.annotations, incoming)
+  def handle_info({:board_delta, delta, _from}, socket) do
+    current = socket.assigns.annotations
+    incoming = Boards.apply_delta(current, delta)
+    effective = diff(current, incoming)
 
-    if empty_delta?(delta) do
+    if empty_delta?(effective) do
       {:noreply, socket}
     else
       {:noreply,
        socket
-       |> note_peer_arrivals(delta["created"])
+       |> note_peer_arrivals(effective["created"])
        |> assign(:annotations, incoming)
        |> assign(:canvas, Boards.put_annotations(socket.assigns.canvas, incoming))
-       |> push_event("board:apply", delta)}
+       |> push_event("board:apply", effective)}
     end
   end
 
@@ -923,12 +992,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   def handle_info({:board_join, _peer, from}, socket) when from == self(), do: {:noreply, socket}
 
-  def handle_info({:board_join, peer, _from}, socket) do
+  def handle_info({:board_join, peer, from}, socket) do
     broadcast(socket.assigns.topic, {:board_hello, socket.assigns.me, self()})
 
     {:noreply,
      socket
-     |> add_peer(peer)
+     |> add_peer(peer, from)
      # Playback travels as commands, so a newcomer arriving between two of
      # them would sit silent with no idea what is playing. Say where we are.
      # Peers already in sync ignore the answer — it lands inside etcher's
@@ -938,13 +1007,21 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   def handle_info({:board_hello, _peer, from}, socket) when from == self(), do: {:noreply, socket}
-  def handle_info({:board_hello, peer, _from}, socket), do: {:noreply, add_peer(socket, peer)}
 
-  def handle_info({:board_leave, peer_id}, socket) do
-    {:noreply,
-     socket
-     |> update(:peers, &Map.delete(&1, peer_id))
-     |> push_event("cursor:remove", %{id: peer_id})}
+  def handle_info({:board_hello, peer, from}, socket),
+    do: {:noreply, add_peer(socket, peer, from)}
+
+  def handle_info({:board_leave, peer_id}, socket), do: {:noreply, drop_peer(socket, peer_id)}
+
+  # A peer's process ended without saying goodbye — a killed connection, a
+  # crashed LiveView, a node that went away. `terminate/2` does not run for
+  # any of those, so the leave it would have sent never came; this is what
+  # takes their avatar and cursor off the board.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, socket) do
+    case Enum.find(socket.assigns.peer_monitors, fn {_id, {_pid, mon}} -> mon == ref end) do
+      {peer_id, _} -> {:noreply, drop_peer(socket, peer_id)}
+      nil -> {:noreply, socket}
+    end
   end
 
   def handle_info({:board_cursor, _id, _x, _y, _meta, from}, socket) when from == self(),
@@ -1020,8 +1097,33 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # ── Helpers ────────────────────────────────────────────────────────────────
 
-  defp add_peer(socket, %{id: id} = peer),
-    do: update(socket, :peers, &Map.put(&1, id, peer))
+  # Each peer's process is monitored from the moment we hear of it, so it is
+  # known to be gone however it went.
+  defp add_peer(socket, %{id: id} = peer, pid) when is_pid(pid) do
+    socket = update(socket, :peers, &Map.put(&1, id, peer))
+
+    case socket.assigns.peer_monitors do
+      %{^id => {^pid, _ref}} ->
+        socket
+
+      monitors ->
+        # A peer that comes back under the same id from another process is
+        # watched through the new one only.
+        with {_pid, old_ref} <- Map.get(monitors, id), do: Process.demonitor(old_ref, [:flush])
+        assign(socket, :peer_monitors, Map.put(monitors, id, {pid, Process.monitor(pid)}))
+    end
+  end
+
+  defp drop_peer(socket, peer_id) do
+    with {_pid, ref} <- Map.get(socket.assigns.peer_monitors, peer_id) do
+      Process.demonitor(ref, [:flush])
+    end
+
+    socket
+    |> update(:peers, &Map.delete(&1, peer_id))
+    |> update(:peer_monitors, &Map.delete(&1, peer_id))
+    |> push_event("cursor:remove", %{id: peer_id})
+  end
 
   # ── Preferences, stored on the user ───────────────────────────────────────
 
@@ -1095,77 +1197,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp broadcast(topic, msg), do: PubSub.broadcast(PubSubHelper.pubsub(), topic, msg)
 
   # ── Shape-list diff (by uuid) ───────────────────────────────────────────────
-
-  # Position in the annotation list *is* z-order — etcher paints in array
-  # order — so the diff has to treat a reshuffle as a real change. Keying
-  # purely by uuid made a pure reorder look identical to no edit at all:
-  # `empty_delta?` returned true, so bringing a caption in front of an image
-  # was never saved and never reached the other viewers.
   #
-  # `order` carries the full uuid list on every delta, not just reorders. The
-  # client applies created/updated/deleted by removing and re-adding shapes,
-  # and re-adding appends — which would scramble layering on any edit at all.
-  # Re-imposing the authoritative order afterwards makes that self-correcting.
+  # The rules live in `PhoenixKitBoards.Boards`, where a save needs them too.
+
   @doc false
-  # Public only so the delta rules can be tested directly — this is where a
-  # silently-dropped reorder would hide, and the suite runs without a DB.
-  def diff(old, new) do
-    old_by = index_by_uuid(old)
-    new_by = index_by_uuid(new)
-    old_ids = MapSet.new(Map.keys(old_by))
-    new_ids = MapSet.new(Map.keys(new_by))
+  defdelegate diff(old, new), to: Boards
 
-    created = new_ids |> MapSet.difference(old_ids) |> Enum.map(&Map.get(new_by, &1))
-    deleted = old_ids |> MapSet.difference(new_ids) |> MapSet.to_list()
-
-    updated =
-      old_ids
-      |> MapSet.intersection(new_ids)
-      |> Enum.map(&Map.get(new_by, &1))
-      |> Enum.filter(fn s -> s != Map.get(old_by, s["uuid"]) end)
-
-    %{
-      "created" => created,
-      "updated" => updated,
-      "deleted" => deleted,
-      "order" => uuid_order(new),
-      # Compared over the shapes present in both, so a create or delete
-      # doesn't masquerade as a reorder — those are already reported above.
-      "reordered" => reordered?(old, new)
-    }
-  end
+  @doc false
+  defdelegate empty_delta?(delta), to: Boards
 
   defp uuid_order(list) do
     for %{"uuid" => uuid} <- list, is_binary(uuid), do: uuid
   end
-
-  defp reordered?(old, new) do
-    old_ids = old |> uuid_order() |> MapSet.new()
-    new_ids = new |> uuid_order() |> MapSet.new()
-    survivors = MapSet.intersection(old_ids, new_ids)
-
-    kept = fn list -> list |> uuid_order() |> Enum.filter(&MapSet.member?(survivors, &1)) end
-
-    kept.(old) != kept.(new)
-  end
-
-  defp index_by_uuid(list) do
-    Enum.reduce(list, %{}, fn
-      %{"uuid" => uuid} = shape, acc when is_binary(uuid) -> Map.put(acc, uuid, shape)
-      _other, acc -> acc
-    end)
-  end
-
-  @doc false
-  def empty_delta?(%{
-        "created" => [],
-        "updated" => [],
-        "deleted" => [],
-        "reordered" => false
-      }),
-      do: true
-
-  def empty_delta?(_), do: false
 
   # ── Render ───────────────────────────────────────────────────────────────
 
@@ -1254,6 +1297,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         phx-hook="BoardSync"
         phx-update="ignore"
         data-fresco-id="board-canvas"
+        data-board-id={@board.uuid}
         class="relative flex-1 min-h-0 rounded-lg border border-base-300 overflow-hidden bg-base-200"
       >
         <%!-- `@initial_canvas`, not `@canvas`: rendered once at mount and

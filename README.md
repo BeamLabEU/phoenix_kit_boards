@@ -69,7 +69,12 @@ new one. With no boards yet that tile is all there is, centred:
 - the big **+** makes an empty canvas and opens it;
 - **Text** makes a canvas with a note already on it;
 - **Image** makes a canvas with a picture already on it — the phone's camera or any
-  file, and the tile is a drop target too.
+  file, and the tile is a drop target too;
+- **Paste** — click into the widget and paste text (a note board) or images (one
+  board with all of them, plus any text that came along). It listens only while
+  the widget has focus and never while you are typing in one of its fields; the
+  tile shows a hint while it is listening and a notice with **Undo** follows.
+  `paste={false}` turns it off.
 
 Text and image boards stay on the page and show up as tiles; the empty one opens,
 since there is nothing in it to see. A tile's menu renames, pins, makes private or
@@ -193,8 +198,11 @@ end
   `js_sources/0` is still declared as a fast path for hosts running core's
   `:phoenix_kit_js_sources` compiler, and LiveView prefers it where it exists.
 - Editing re-emits the full etcher annotation list (`etcher:annotations-changed`);
-  the LiveView diffs, persists, and broadcasts over PubSub; peers apply the
-  delta. Echo is broken server-side (an unchanged list diffs to empty).
+  the LiveView takes what changed against the list it last held and applies that
+  to the stored board under a row lock (`Boards.apply_edit/3`, so concurrent
+  saves all land), then broadcasts the delta over PubSub once it is stored; peers
+  apply it to their own list. Echo is broken server-side (an already-applied
+  delta changes nothing).
 - Presence and cursors ride the same PubSub topic; cursors are sent in canvas
   coordinates so they track each viewer's pan/zoom.
 

@@ -4,6 +4,51 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Paste to make a board.** Click into the widget (or tab to it) and paste: text
+  makes a note board, and images, with any text that came with them, make ONE
+  board holding all of them (a note across the top, the pictures in a grid under
+  it). It listens only while the widget has focus and never while you are typing
+  in one of its fields, so a paste elsewhere on the page is untouched. The
+  new-board tile shows "Paste text or an image" while it is listening, a short
+  notice with **Undo** follows each paste, and the board stays on the page so
+  several pastes in a row work. `paste={false}` turns it off; `script_nonce`
+  covers a Content-Security-Policy. Choosing or dropping several pictures at once
+  now makes one board of them too (up to eight), where it used to take one.
+- **A board reopens where you left it.** The zoom and pan are remembered per
+  board in the browser and put back when you return.
+
+### Fixed
+
+- **Opening an old board with embedded images tells everyone already on it.**
+  The images are moved into storage when a board opens, and nobody else on the
+  board was told, so they kept the heavy embedded copies and wrote them back the
+  next time they touched one of those shapes.
+- **A viewer whose connection dies no longer lingers on the board.** The "who is
+  online" list relied on a goodbye sent when a page closed cleanly, which a
+  killed connection, a crash or a lost node never sends, leaving a ghost avatar
+  and cursor until everyone reloaded. Each peer's process is now watched from
+  the moment it is heard of.
+- **Pasting a link no longer holds your board.** The page was fetched inside the
+  LiveView, so for as long as a slow site took (up to 12 seconds) your edits,
+  your cursor and what your peers sent you all waited. It is fetched in a task
+  and answered with an event paired to the paste; at most three run at once.
+- **A tile's menu is no longer cut off.** It opened inside its tile and, on a
+  small screen, went behind the tiles after it. It now spans the tile and sits
+  above its neighbours while open.
+- **The LiveView cursor fallback only relays numbers**, as the channel path
+  already did.
+- **Two people saving at once no longer overwrite each other.** An edit used to
+  be saved as the editor's whole shape list, so a save made from a list that was
+  a moment stale erased whatever a peer had saved in between, and each editor
+  replaced their own list with whichever list arrived last. The edit is now
+  saved as what it changed, applied to the stored board under a row lock, and
+  peers are told that change after it is stored (and in the order it was
+  stored), not the whole list before it is written.
+
 ## 0.6.0 - 2026-10-30
 
 Boards can now belong to a place inside a host app, be private or shared, keep
