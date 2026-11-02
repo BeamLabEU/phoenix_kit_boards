@@ -119,16 +119,16 @@ defmodule PhoenixKitBoards.Quick do
     name = if note == "", do: image_name(elem(hd(files), 1)), else: note_name(note)
 
     with {:ok, board} <- create(scope, user_uuid, name, opts) do
-      case store_all(files, user_uuid, board) do
-        {:ok, stored} ->
-          case put_shapes(board, layout(stored, note)) do
-            {:ok, _canvas, board} -> {:ok, board}
-            {:error, _} = error -> discard(board, error)
-          end
+      fill_collection(board, files, user_uuid, note)
+    end
+  end
 
-        {:error, _} = error ->
-          discard(board, error)
-      end
+  defp fill_collection(board, files, user_uuid, note) do
+    with {:ok, stored} <- store_all(files, user_uuid, board),
+         {:ok, _canvas, board} <- put_shapes(board, layout(stored, note)) do
+      {:ok, board}
+    else
+      {:error, _} = error -> discard(board, error)
     end
   end
 
@@ -165,11 +165,10 @@ defmodule PhoenixKitBoards.Quick do
           {[], @margin}
 
         text ->
-          shape = note_shape(text)
+          shape = fit_note(note_shape(text), {canvas_w - 2 * @margin, canvas_h * 0.45 - @margin})
           %{"w" => w, "h" => h} = shape["geometry"]
           placed = put_geometry(shape, round((canvas_w - w) / 2), @margin)
-          # A very long note must not leave the pictures no room.
-          {[placed], min(@margin + h + @gap, round(canvas_h * 0.55))}
+          {[placed], @margin + h + @gap}
       end
 
     count = length(stored)
@@ -196,6 +195,18 @@ defmodule PhoenixKitBoards.Quick do
       end)
 
     note_shapes ++ pictures
+  end
+
+  # Shrink the text and its box together. Clamping only the picture grid's
+  # start leaves the long note drawn through the pictures and off the canvas.
+  defp fit_note(%{"geometry" => %{"w" => w, "h" => h}} = shape, {max_w, max_h}) do
+    font_size = max(1, floor(@font_size * min(1, min(max_w / w, max_h / h))))
+    scale = font_size / @font_size
+
+    shape
+    |> put_in(["style", "font_size"], font_size)
+    |> put_in(["geometry", "w"], round(w * scale))
+    |> put_in(["geometry", "h"], round(h * scale))
   end
 
   defp columns(count) when count <= 3, do: count

@@ -70,5 +70,22 @@ defmodule PhoenixKitBoards.ApplyDeltaTest do
       list = [shape("a"), shape("b")]
       assert Boards.apply_delta(list, edit(list, list)) == list
     end
+
+    test "a stale content edit preserves a peer's reorder" do
+      base = [shape("a"), shape("b")]
+      delta = edit(base, [shape("a", 5), shape("b")])
+
+      assert Boards.apply_delta(Enum.reverse(base), delta) == [shape("b"), shape("a", 5)]
+      assert Boards.apply_delta(Enum.reverse(base), edit(base, base)) == Enum.reverse(base)
+    end
+
+    test "adding shapes from a stale order preserves the stored survivors' order" do
+      base = [shape("a"), shape("b")]
+      delta = edit(base, [shape("first"), shape("a"), shape("middle"), shape("b"), shape("last")])
+      merged = Boards.apply_delta(Enum.reverse(base), delta)
+
+      assert ids(merged) == ["middle", "b", "first", "a", "last"]
+      assert Boards.apply_delta(merged, delta) == merged
+    end
   end
 end

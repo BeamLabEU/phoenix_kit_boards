@@ -55,6 +55,10 @@ defmodule PhoenixKitBoards.QuickLayoutTest do
              {_, y1, _, y2} = box(p)
              y2 - y1 > 500 and y1 < canvas_h * 0.8
            end)
+
+    boxes = Enum.map(shapes, &box/1)
+    assert Enum.all?(boxes, &inside_canvas?/1)
+    for a <- boxes, b <- boxes, a != b, do: refute(overlap?(a, b))
   end
 
   test "pictures keep their proportions" do

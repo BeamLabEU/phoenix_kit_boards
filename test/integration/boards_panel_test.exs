@@ -644,6 +644,84 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert board.preview["text"] == "Bathroom tiles"
     end
 
+    test "moving the widget discards pending paste text and its creation notice", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_text(lv, "Old place notice")
+      paste_context(lv, "Confidential old place text")
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        current_user: me,
+        scope: {"project", "new-place"},
+        poll: 0
+      )
+
+      refute render(lv) =~ "Old place notice"
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "new.png", content: @png, type: "image/png"}
+        ])
+
+      html = render_upload(input, "new.png")
+
+      assert [board] = Boards.list_for_scope({"project", "new-place"}, me.uuid)
+      assert board.preview["count"] == 1
+      assert board.preview["text"] == nil
+      refute html =~ "Board created"
+    end
+
+    test "canceling the last pasted image discards its text", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_context(lv, "Canceled paste")
+
+      pending =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "canceled.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(pending, "canceled.png", 1)
+
+      lv |> element("button[phx-click=cancel_image]") |> render_click()
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "next.png", content: @png, type: "image/png"}
+        ])
+
+      html = render_upload(input, "next.png")
+
+      assert [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert board.preview["count"] == 1
+      refute html =~ "Board created"
+    end
+
+    test "canceling an unfinished image completes the rest of the paste", %{conn: conn, me: me} do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_context(lv, "Keep this picture")
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "done.png", content: @png, type: "image/png"},
+          %{name: "cancel.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(input, "done.png")
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+
+      # The completed entry has a cancel button too; only cancel the other.
+      cancel = Enum.find(input.entries, &(&1["name"] == "cancel.png"))["ref"]
+
+      fire(lv, "cancel_image", %{"ref" => cancel})
+
+      assert [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert board.preview["count"] == 2
+      assert board.preview["text"] == "Keep this picture"
+    end
+
     test "a dropped picture is not announced as a paste", %{conn: conn, me: me} do
       {:ok, lv, _} = mount_panel(conn, me)
 

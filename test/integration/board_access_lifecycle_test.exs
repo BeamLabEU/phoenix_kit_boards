@@ -21,7 +21,9 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     # The test database's bucket writes under a RELATIVE path, i.e. into this
     # repository. Point it at a temp directory for the length of the test (the
     # update is rolled back with the sandbox).
-    root = Path.join(System.tmp_dir!(), "boards_access_media_#{System.unique_integer([:positive])}")
+    root =
+      Path.join(System.tmp_dir!(), "boards_access_media_#{System.unique_integer([:positive])}")
+
     Repo.update_all("phoenix_kit_buckets", set: [endpoint: root])
 
     on_exit(fn ->
@@ -78,6 +80,40 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     {:ok, lv, _} = open(ctx.board, ctx.other)
     {:ok, _} = Boards.delete_board(ctx.board)
     assert_redirect(lv, "/projects")
+  end
+
+  test "delayed peer messages cannot roll a viewer back from the committed board", ctx do
+    {:ok, lv, _} = open(ctx.board, ctx.owner)
+    base = Boards.annotations(Boards.load_canvas(ctx.board))
+    first = put_in(hd(base), ["metadata", "title"], "First edit")
+    last = put_in(first, ["metadata", "title"], "Latest edit")
+    {:ok, _, _, _, early} = Boards.apply_edit(ctx.board, base, [first])
+    {:ok, _, _, _, late} = Boards.apply_edit(ctx.board, [first], [last])
+
+    send(lv.pid, {:board_delta, late, self()})
+    assert_push_event(lv, "board:apply", %{"updated" => [^last]})
+    send(lv.pid, {:board_delta, early, self()})
+    render(lv)
+    refute_push_event(lv, "board:apply", %{"updated" => [^first]})
+
+    # Sending the up-to-date browser state must remain a no-op, rather than
+    # writing a spurious correction after a delayed message regressed the LV.
+    PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{ctx.board.uuid}")
+    render_hook(lv, "etcher:annotations-changed", %{"annotations" => [last]})
+    refute_receive {:board_delta, _, _}, 100
+  end
+
+  test "a late create does not resurrect a shape already deleted in storage", ctx do
+    {:ok, lv, _} = open(ctx.board, ctx.owner)
+    base = Boards.annotations(Boards.load_canvas(ctx.board))
+    peer = Quick.note_shape("Already deleted")
+    {:ok, _, _, _, created} = Boards.apply_edit(ctx.board, base, base ++ [peer])
+    {:ok, _, _, _, deleted} = Boards.apply_edit(ctx.board, base ++ [peer], base)
+
+    send(lv.pid, {:board_delta, deleted, self()})
+    send(lv.pid, {:board_delta, created, self()})
+    render(lv)
+    refute_push_event(lv, "board:apply", %{"created" => [^peer]})
   end
 
   describe "cursor:move over the LiveView fallback" do

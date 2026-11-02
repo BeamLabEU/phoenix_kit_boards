@@ -20,6 +20,8 @@
     mounted() {
       var el = this.el;
       var self = this;
+      this.imageQueue = [];
+      this.pasteContext = el.dataset.pasteContext;
 
       // A click anywhere in the widget makes it the active one. Browsers
       // differ on whether a clicked button takes focus (Safari's does not), so
@@ -48,10 +50,8 @@
 
         if (files.length) {
           e.preventDefault();
-          // Said first so it is there when the upload finishes: the text that
-          // came with the pictures goes on the same board.
-          self.pushEventTo(el, "paste_context", { text: text });
-          self.uploadTo(el, "quick_image", files);
+          self.imageQueue.push({ files: files, text: text });
+          self.drainPastes();
         } else if (text.trim() !== "") {
           e.preventDefault();
           self.pushEventTo(el, "paste_text", { text: text });
@@ -62,7 +62,38 @@
       el.addEventListener("paste", this.onPaste);
     },
 
+    // The upload has one server-side collection and one accompanying note.
+    // Wait for it to clear before starting another paste, so rapid pastes do
+    // not combine their images or overwrite each other's note.
+    uploading() {
+      var input = this.el.querySelector("input[type='file'][name='quick_image']");
+      return !!(input && input.dataset.phxActiveRefs);
+    },
+
+    drainPastes() {
+      if (this.activePaste || this.uploading() || !this.imageQueue.length) return;
+      var paste = this.imageQueue.shift();
+      this.activePaste = true;
+      this.sawUpload = false;
+      this.pushEventTo(this.el, "paste_context", { text: paste.text });
+      this.uploadTo(this.el, "quick_image", paste.files);
+    },
+
+    updated() {
+      if (this.pasteContext !== this.el.dataset.pasteContext ||
+          this.el.dataset.paste !== "on" || this.el.dataset.pasteImages !== "on") {
+        this.imageQueue = [];
+        this.activePaste = false;
+        this.sawUpload = false;
+        this.pasteContext = this.el.dataset.pasteContext;
+      }
+      if (this.activePaste && this.uploading()) this.sawUpload = true;
+      if (this.activePaste && this.sawUpload && !this.uploading()) this.activePaste = false;
+      this.drainPastes();
+    },
+
     destroyed() {
+      this.imageQueue = [];
       this.el.removeEventListener("pointerdown", this.onPointerDown);
       this.el.removeEventListener("paste", this.onPaste);
     }

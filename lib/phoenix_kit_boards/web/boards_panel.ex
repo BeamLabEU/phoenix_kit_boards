@@ -210,6 +210,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       error: nil,
       note: "",
       text_open?: false,
+      created: nil,
+      paste_text: nil,
       visibility: socket.assigns.default_visibility
     )
   end
@@ -436,8 +438,17 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   def handle_event("validate_image", _params, socket), do: {:noreply, socket}
 
-  def handle_event("cancel_image", %{"ref" => ref}, socket),
-    do: {:noreply, cancel_upload(socket, :quick_image, ref)}
+  def handle_event("cancel_image", %{"ref" => ref}, socket) do
+    socket = cancel_upload(socket, :quick_image, ref)
+
+    case active_image_entries(socket) do
+      [] ->
+        {:noreply, assign(socket, :paste_text, nil)}
+
+      entries ->
+        if Enum.all?(entries, & &1.done?), do: make_image_board(socket), else: {:noreply, socket}
+    end
+  end
 
   def handle_event("show_all", _params, socket),
     do: {:noreply, socket |> assign(:show_all?, true) |> load()}
@@ -503,7 +514,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   # text, share a board. The work waits for the last file — each one reports
   # done separately.
   defp handle_image_progress(:quick_image, %{done?: true}, socket) do
-    entries = socket.assigns.uploads.quick_image.entries
+    entries = active_image_entries(socket)
 
     if Enum.all?(entries, & &1.done?) do
       make_image_board(socket)
@@ -514,6 +525,9 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp handle_image_progress(:quick_image, _entry, socket), do: {:noreply, socket}
 
+  defp active_image_entries(socket),
+    do: Enum.reject(socket.assigns.uploads.quick_image.entries, & &1.cancelled?)
+
   defp make_image_board(socket) do
     pasted? = socket.assigns.paste_text != nil
     text = socket.assigns.paste_text
@@ -521,32 +535,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
     case allow_create(socket) do
       :ok ->
-        # The upload's temp files go when each is consumed, so they are copied
-        # out to be handled together.
-        files =
-          consume_uploaded_entries(socket, :quick_image, fn %{path: path}, entry ->
-            copy =
-              Path.join(System.tmp_dir!(), "boards-paste-#{System.unique_integer([:positive])}")
-
-            case File.cp(path, copy) do
-              :ok -> {:ok, {copy, entry}}
-              {:error, _} -> {:postpone, nil}
-            end
-          end)
-          |> Enum.reject(&is_nil/1)
-
-        try do
-          Quick.create_collection(
-            socket.assigns.scope,
-            socket.assigns.user_uuid,
-            files,
-            text,
-            create_opts(socket)
-          )
-        after
-          Enum.each(files, fn {copy, _entry} -> File.rm(copy) end)
-        end
-        |> case do
+        case save_image_collection(socket, text) do
           {:ok, board} when pasted? -> {:noreply, created(socket, board)}
           {:ok, _board} -> {:noreply, socket |> assign(:error, nil) |> load()}
           {:error, :empty} -> {:noreply, socket}
@@ -556,6 +545,52 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       {:error, message} ->
         # Not consumed: the entries are dropped with the upload.
         {:noreply, fail(socket, message)}
+    end
+  end
+
+  defp save_image_collection(socket, text) do
+    # Canceled channels may still be shutting down. Consume only the active,
+    # completed entries, without waiting for those channels to disappear.
+    copied =
+      socket
+      |> active_image_entries()
+      |> Enum.map(fn entry ->
+        consume_uploaded_entry(socket, entry, fn %{path: path} ->
+          {:ok, copy_image(path, entry)}
+        end)
+      end)
+
+    files = for {path, entry} <- copied, is_binary(path), do: {path, entry}
+
+    try do
+      case Enum.find(copied, &match?({:error, _}, &1)) do
+        nil ->
+          Quick.create_collection(
+            socket.assigns.scope,
+            socket.assigns.user_uuid,
+            files,
+            text,
+            create_opts(socket)
+          )
+
+        error ->
+          error
+      end
+    after
+      Enum.each(files, fn {copy, _entry} -> File.rm(copy) end)
+    end
+  end
+
+  defp copy_image(path, entry) do
+    copy = Path.join(System.tmp_dir!(), "boards-paste-#{System.unique_integer([:positive])}")
+
+    case File.cp(path, copy) do
+      :ok ->
+        {copy, entry}
+
+      {:error, reason} ->
+        File.rm(copy)
+        {:error, reason}
     end
   end
 
@@ -679,6 +714,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       data-paste={if @paste?, do: "on", else: "off"}
       data-paste-images={if :image in @actions, do: "on", else: "off"}
       data-paste-text={if :text in @actions, do: "on", else: "off"}
+      data-paste-context={inspect({@user_uuid, @scope, @scope_ok?})}
     >
       <script :if={@paste?} data-phx-runtime-hook="BoardsPanelPaste" nonce={@script_nonce}>
         <%= Phoenix.HTML.raw("window.phx_hook_BoardsPanelPaste = function () { return " <> paste_hook() <> "; };") %>
@@ -888,6 +924,9 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
       <div :for={entry <- @uploads.quick_image.entries} class="flex w-full items-center gap-1 text-xs">
         <progress class="progress progress-primary flex-1" value={entry.progress} max="100"></progress>
+        <span :for={err <- upload_errors(@uploads.quick_image, entry)} class="text-error">
+          {upload_error_text(err)}
+        </span>
         <button
           type="button"
           phx-click="cancel_image"
@@ -1110,6 +1149,6 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp upload_error_text(:too_large), do: "That file is too large."
   defp upload_error_text(:not_accepted), do: "Only images can be added here."
-  defp upload_error_text(:too_many_files), do: "One image at a time."
+  defp upload_error_text(:too_many_files), do: "Up to #{@max_paste_files} images at a time."
   defp upload_error_text(_), do: "That upload failed."
 end

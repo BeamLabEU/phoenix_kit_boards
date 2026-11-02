@@ -169,7 +169,7 @@ All real-time traffic for a board rides one PubSub topic:
 
 | Message | Meaning |
 |---------|---------|
-| `{:board_annotations, list, from}` | The full etcher annotation list changed |
+| `{:board_delta, delta, from}` | A stored edit changed the annotation list |
 | `{:board_join, peer, from}` | A newcomer arrived |
 | `{:board_hello, peer, from}` | Reply to a join, so the newcomer learns about existing viewers |
 | `{:board_leave, peer_id}` | A viewer disconnected (sent from `terminate/2`) |
@@ -189,9 +189,14 @@ annotations and deferred image storage, and every five seconds while idle.
 `handle_info/2` clause. Editing re-emits the *entire* annotation list
 (`etcher:annotations-changed`); the LiveView diffs it against the list it last
 held, applies that change to the stored row under a lock (`Boards.apply_edit/3`),
-and broadcasts the delta after it is stored. Peers apply it to their own list
-and push the effective change without remounting the canvas — a delta that is
-already applied changes nothing.
+and broadcasts the effective delta after it is stored. Its `base_revision` and
+`revision` are opaque tokens kept with the document in `extensions.boards_sync`,
+under the same row lock. Peers apply consecutive revisions directly; a gap,
+out-of-order message or older sender without tokens triggers a reload of the
+committed row. Transactions do not order different senders' PubSub messages.
+The client receives only the effective change without remounting the canvas;
+an already applied revision changes nothing. A content edit preserves the
+stored z-order unless the editor explicitly reordered surviving shapes.
 
 Cursors are sent in canvas coordinates rather than screen pixels so they track
 each viewer's own pan and zoom.

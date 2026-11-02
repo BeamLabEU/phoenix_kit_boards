@@ -442,7 +442,7 @@ defmodule PhoenixKitBoards.Boards do
   Returns `{:ok, canvas, board, merged, delta}`: the stored list after the edit
   and the delta that was applied, which is what peers should be sent.
   """
-  def apply_edit(%Board{uuid: uuid} = board, base, incoming)
+  def apply_edit(%Board{uuid: uuid}, base, incoming)
       when is_list(base) and is_list(incoming) do
     delta = diff(base, incoming)
 
@@ -453,29 +453,53 @@ defmodule PhoenixKitBoards.Boards do
             repo().rollback(:not_found)
 
           %Board{} = row ->
-            canvas = load_canvas(row)
-            merged = apply_delta(annotations(canvas), delta)
-            canvas = put_annotations(canvas, merged)
-
-            case row
-                 |> Board.data_changeset(canvas_to_map(canvas))
-                 |> Ecto.Changeset.put_change(:preview, preview_from(merged))
-                 |> repo().update() do
-              {:ok, saved} -> {canvas, saved, merged}
-              {:error, reason} -> repo().rollback(reason)
-            end
+            save_locked_edit(row, delta)
         end
       end)
 
     case result do
-      {:ok, {canvas, saved, merged}} ->
-        if saved.preview != board.preview, do: announce(saved)
-        {:ok, canvas, saved, merged, delta}
+      {:ok, {canvas, saved, merged, applied, preview_changed?}} ->
+        if preview_changed?, do: announce(saved)
+        {:ok, canvas, saved, merged, applied}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp save_locked_edit(row, delta) do
+    canvas = load_canvas(row)
+    stored = annotations(canvas)
+    merged = apply_delta(stored, delta)
+    revision = UUIDv7.generate()
+
+    applied =
+      stored
+      |> diff(merged)
+      |> Map.put("base_revision", sync_revision(canvas))
+      |> Map.put("revision", revision)
+
+    canvas = canvas |> put_annotations(merged) |> put_sync_revision(revision)
+
+    case row
+         |> Board.data_changeset(canvas_to_map(canvas))
+         |> Ecto.Changeset.put_change(:preview, preview_from(merged))
+         |> repo().update() do
+      {:ok, saved} -> {canvas, saved, merged, applied, saved.preview != row.preview}
+      {:error, reason} -> repo().rollback(reason)
+    end
+  end
+
+  # An opaque chain token, persisted with the document under the same lock.
+  # Peers can apply consecutive deltas without fetching the whole canvas;
+  # a missing or out-of-order link requires a read of the committed row.
+  @doc false
+  def sync_revision(%Fresco.Canvas{extensions: extensions}),
+    do: get_in(extensions, ["boards_sync", "revision"])
+
+  @doc false
+  def put_sync_revision(canvas, revision),
+    do: Fresco.Canvas.put_extension(canvas, "boards_sync", %{"revision" => revision})
 
   @doc """
   The list after applying `delta` to `list`.
@@ -483,9 +507,10 @@ defmodule PhoenixKitBoards.Boards do
   Idempotent, so a delta that is already in `list` (an editor hearing about its
   own save, or one arriving twice) changes nothing: a shape is created or
   replaced by uuid, a delete of a missing shape is ignored, and an update to a
-  shape somebody has since deleted does not bring it back. The delta's `order`
-  is imposed on the shapes it names, in the slots those shapes already occupy,
-  so shapes it has never heard of stay where they are.
+  shape somebody has since deleted does not bring it back. Explicit reorders
+  use the delta's `order` in the slots those shapes already occupy. Otherwise
+  survivors keep their stored order and new shapes go before their next known
+  neighbour (or at the end), so an ordinary edit cannot undo a peer's reorder.
   """
   def apply_delta(list, delta) when is_list(list) do
     deleted = MapSet.new(delta["deleted"] || [])
@@ -501,8 +526,36 @@ defmodule PhoenixKitBoards.Boards do
     {replaced, fresh} = Enum.split_with(creates, &MapSet.member?(present, &1["uuid"]))
     replacements = index_by_uuid(replaced)
 
-    (Enum.map(kept, &Map.get(replacements, &1["uuid"], &1)) ++ fresh)
-    |> impose_order(delta["order"] || [])
+    kept = Enum.map(kept, &Map.get(replacements, &1["uuid"], &1))
+
+    if delta["reordered"] == false,
+      do: place_created(kept, fresh, delta["order"] || []),
+      else: impose_order(kept ++ fresh, delta["order"] || [])
+  end
+
+  defp place_created(list, [], _order), do: list
+
+  defp place_created(list, fresh, order) do
+    present = list |> uuid_order() |> MapSet.new()
+    initial = {list, index_by_uuid(fresh), nil}
+
+    {placed, remaining, _anchor} =
+      Enum.reduce(Enum.reverse(order), initial, fn uuid, {acc, pending, anchor} ->
+        case Map.pop(pending, uuid) do
+          {nil, _} ->
+            {acc, pending, next_anchor(present, uuid, anchor)}
+
+          {shape, rest} ->
+            at = Enum.find_index(acc, &(&1["uuid"] == anchor)) || length(acc)
+            {List.insert_at(acc, at, shape), rest, uuid}
+        end
+      end)
+
+    placed ++ Enum.filter(fresh, &Map.has_key?(remaining, &1["uuid"]))
+  end
+
+  defp next_anchor(present, uuid, anchor) do
+    if MapSet.member?(present, uuid), do: uuid, else: anchor
   end
 
   defp impose_order(list, []), do: list

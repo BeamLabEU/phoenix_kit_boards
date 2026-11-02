@@ -733,16 +733,15 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       # list went out of date the moment a peer saved after we last heard from
       # them, and writing it back erased their work. The edit is applied to
       # what is stored under a row lock, so concurrent saves queue up and all
-      # land, and the room hears about it only once it is stored — in the order
-      # it was stored.
+      # land. The room hears about it only once it is stored; receivers read
+      # the committed row because different senders' notices may overtake.
       case Boards.apply_edit(socket.assigns.board, socket.assigns.annotations, annotations) do
         {:ok, canvas, board, merged, delta} ->
           broadcast(socket.assigns.topic, {:board_delta, delta, self()})
 
           # What this editor's own canvas shows is its list plus the edit; if
           # the stored board has moved on past that, it lacks the difference.
-          expected = Boards.apply_delta(socket.assigns.annotations, delta)
-          catch_up = diff(expected, merged)
+          catch_up = diff(annotations, merged)
 
           {:noreply,
            socket
@@ -786,7 +785,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # make them reconnect. Untrusted input reaches every step of it.
   def handle_event("board:unfurl", %{"url" => url, "ref" => ref}, socket)
       when is_binary(url) and is_binary(ref) and byte_size(ref) in 1..64 do
-    if map_size(socket.assigns.unfurls) >= @max_unfurls do
+    if Map.has_key?(socket.assigns.unfurls, ref) or
+         map_size(socket.assigns.unfurls) >= @max_unfurls do
       {:noreply, push_event(socket, "board:unfurled", %{"ref" => ref, "error" => "busy"})}
     else
       task = {:unfurl, ref}
@@ -800,7 +800,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   # A client that predates the `ref` waits on a reply to the push itself, so
   # it still gets one — at the old price of holding this process.
-  def handle_event("board:unfurl", %{"url" => url}, socket) when is_binary(url) do
+  def handle_event("board:unfurl", %{"url" => url} = params, socket)
+      when is_binary(url) and not is_map_key(params, "ref") do
     {:reply, unfurl_reply(url), socket}
   end
 
@@ -961,19 +962,25 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     do: {:noreply, socket}
 
   def handle_info({:board_delta, delta, _from}, socket) do
-    current = socket.assigns.annotations
-    incoming = Boards.apply_delta(current, delta)
-    effective = diff(current, incoming)
+    # The row lock orders writes, but it cannot order messages sent by
+    # different processes AFTER their transactions commit. Consecutive
+    # revisions are safe to apply; a gap or an older sender needs a re-read.
+    revision = Boards.sync_revision(socket.assigns.canvas)
 
-    if empty_delta?(effective) do
-      {:noreply, socket}
-    else
-      {:noreply,
-       socket
-       |> note_peer_arrivals(effective["created"])
-       |> assign(:annotations, incoming)
-       |> assign(:canvas, Boards.put_annotations(socket.assigns.canvas, incoming))
-       |> push_event("board:apply", effective)}
+    cond do
+      is_binary(delta["revision"]) and delta["revision"] == revision ->
+        {:noreply, socket}
+
+      is_binary(delta["revision"]) and delta["base_revision"] == revision ->
+        canvas =
+          socket.assigns.canvas
+          |> Boards.put_annotations(Boards.apply_delta(socket.assigns.annotations, delta))
+          |> Boards.put_sync_revision(delta["revision"])
+
+        {:noreply, sync_canvas(socket, canvas)}
+
+      true ->
+        {:noreply, reload_committed_board(socket)}
     end
   end
 
@@ -1096,6 +1103,35 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   # ── Helpers ────────────────────────────────────────────────────────────────
+
+  defp reload_committed_board(socket) do
+    case Boards.get_board(socket.assigns.board.uuid) do
+      nil ->
+        {:ok, socket} = not_found(assign(socket, :board, nil))
+        socket
+
+      board ->
+        socket |> assign(:board, board) |> sync_canvas(Boards.load_canvas(board))
+    end
+  end
+
+  defp sync_canvas(socket, canvas) do
+    incoming = Boards.annotations(canvas)
+    effective = diff(socket.assigns.annotations, incoming)
+
+    socket =
+      socket
+      |> assign(:canvas, canvas)
+      |> assign(:annotations, incoming)
+
+    if empty_delta?(effective) do
+      socket
+    else
+      socket
+      |> note_peer_arrivals(effective["created"])
+      |> push_event("board:apply", effective)
+    end
+  end
 
   # Each peer's process is monitored from the moment we hear of it, so it is
   # known to be gone however it went.

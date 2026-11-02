@@ -100,6 +100,38 @@ const flush = () => { while (timers.length) timers.shift()(); };
   assert.deepStrictEqual(JSON.parse(store["phoenix_kit_boards:view:b3"]), { x: 10, y: 20, width: 30, height: 40 });
   assert.strictEqual(windowEvents.pagehide, undefined, "the pagehide listener is removed");
 
+  // Navigation can destroy the hook while Fresco is still laying out.
+  let settleLayout;
+  h = handle({ x: 0, y: 0, width: 1000, height: 800 });
+  h.whenLayoutSettled = () => new Promise((r) => { settleLayout = r; });
+  store["phoenix_kit_boards:view:closed"] = JSON.stringify({ x: 1, y: 2, width: 30, height: 40 });
+  hk = hook("closed", h);
+  hk.destroyed();
+  settleLayout();
+  await tick();
+  assert.deepStrictEqual(h.fitted, [], "a destroyed hook cannot restore a view");
+  assert.deepStrictEqual(Object.keys(h.listeners), [], "a destroyed hook cannot add listeners");
+
+  // onReady itself may arrive after navigation, using the same canvas id.
+  let ready;
+  hk = Object.create(BoardSync);
+  hk.frescoId = "board-canvas";
+  hk.el = { dataset: { boardId: "closed" } };
+  window.Fresco = { onReady: (_id, cb) => { ready = cb; } };
+  hk.rememberView();
+  hk.destroyed();
+  h = handle({ x: 0, y: 0, width: 1000, height: 800 });
+  ready(h);
+  await tick();
+  assert.deepStrictEqual(h.fitted, [], "an old hook cannot restore onto the next canvas");
+  assert.deepStrictEqual(Object.keys(h.listeners), []);
+
+  h = handle({ x: 0, y: 0, width: 1000, height: 800 });
+  h.whenLayoutSettled = () => Promise.reject(new Error("canvas removed"));
+  hook("layout-failed", h);
+  await tick();
+  assert.deepStrictEqual(Object.keys(h.listeners), [], "a rejected layout is harmless");
+
   // A hook torn down with the canvas already gone must not save a collapsed view.
   h = handle({ x: 0, y: 0, width: 1000, height: 800 });
   hk = hook("b4", h);

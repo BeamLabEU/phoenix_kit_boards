@@ -311,6 +311,9 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // Nobody is left to hear a preview that is still being fetched.
       Object.values(this.unfurls || {}).forEach((settle) => settle({ error: "board closed" }));
       this.flushView();
+      this.viewDisposed = true;
+      this.viewHandle = null;
+      this.viewWatching = false;
       (this.viewOff || []).forEach((off) => typeof off === "function" && off());
       this.viewOff = [];
       if (this.onHide) window.removeEventListener("pagehide", this.onHide);
@@ -352,6 +355,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       window.addEventListener("pagehide", this.onHide);
 
       window.Fresco.onReady(this.frescoId, (handle) => {
+        if (this.viewDisposed) return;
         this.viewHandle = handle;
         const settled =
           typeof handle.whenLayoutSettled === "function"
@@ -359,7 +363,7 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
             : Promise.resolve();
 
         Promise.resolve(settled).then(() => {
-          if (this.viewHandle !== handle || this.viewWatching) return;
+          if (this.viewDisposed || this.viewHandle !== handle || this.viewWatching) return;
           const saved = this.readView();
           if (saved) handle.fitBounds(saved);
 
@@ -367,6 +371,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
           ["pan", "zoom", "update-viewport"].forEach((name) => {
             this.viewOff.push(handle.on(name, () => this.scheduleViewSave()));
           });
+        }).catch(() => {
+          // Navigation may remove the canvas before its layout settles.
         });
       });
     },

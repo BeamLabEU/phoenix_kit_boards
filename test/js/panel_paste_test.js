@@ -20,11 +20,13 @@ const plainNode = { isContentEditable: false, closest: () => null };
 function mount(dataset) {
   const listeners = {};
   const sent = [];
+  const uploadInput = { dataset: { phxActiveRefs: "" } };
   const el = {
     dataset: { paste: "on", pasteImages: "on", pasteText: "on", ...dataset },
     addEventListener: (n, f) => { listeners[n] = f; },
     removeEventListener: (n) => { delete listeners[n]; },
     contains: () => false,
+    querySelector: () => uploadInput,
     focus: () => { el.focused = true; }
   };
   const hook = Object.create(hookDef);
@@ -32,7 +34,7 @@ function mount(dataset) {
   hook.pushEventTo = (_t, name, payload) => sent.push({ kind: "push", name, payload });
   hook.uploadTo = (_t, name, files) => sent.push({ kind: "upload", name, files });
   hook.mounted();
-  return { el, hook, listeners, sent };
+  return { el, hook, listeners, sent, uploadInput };
 }
 
 function paste(target, { files = [], text = "" } = {}) {
@@ -62,6 +64,39 @@ assert.deepStrictEqual(m.sent.map((s) => s.name), ["paste_context", "quick_image
 assert.strictEqual(m.sent[0].payload.text, "tiles");
 assert.strictEqual(m.sent[1].files.length, 2);
 assert.ok(e.prevented);
+
+// A second image paste waits, even before the first upload is registered.
+m = mount();
+m.listeners.paste(paste(plainNode, { files: [png], text: "first" }));
+m.listeners.paste(paste(plainNode, { files: [png], text: "second" }));
+assert.deepStrictEqual(m.sent.map((s) => s.name), ["paste_context", "quick_image"]);
+m.hook.updated();
+assert.strictEqual(m.sent.length, 2, "a context-only patch cannot release the next paste");
+m.uploadInput.dataset.phxActiveRefs = "first-ref";
+m.hook.updated();
+m.uploadInput.dataset.phxActiveRefs = "";
+m.hook.updated();
+assert.deepStrictEqual(m.sent.map((s) => s.name), ["paste_context", "quick_image", "paste_context", "quick_image"]);
+assert.strictEqual(m.sent[0].payload.text, "first");
+assert.strictEqual(m.sent[2].payload.text, "second");
+
+// A picker/drop upload already in flight is also a separate collection.
+m = mount();
+m.uploadInput.dataset.phxActiveRefs = "picker-ref";
+m.listeners.paste(paste(plainNode, { files: [png], text: "queued" }));
+assert.strictEqual(m.sent.length, 0);
+m.uploadInput.dataset.phxActiveRefs = "";
+m.hook.updated();
+assert.strictEqual(m.sent[0].payload.text, "queued");
+
+// Pending clipboard data cannot follow a widget to another user/place.
+m = mount({ pasteContext: "old" });
+m.listeners.paste(paste(plainNode, { files: [png], text: "old first" }));
+m.listeners.paste(paste(plainNode, { files: [png], text: "old pending" }));
+m.el.dataset.pasteContext = "new";
+m.hook.updated();
+assert.deepStrictEqual(m.hook.imageQueue, []);
+assert.strictEqual(m.sent.length, 2, "queued images were discarded on context change");
 
 // Only images count; other files are left alone.
 m = mount();
