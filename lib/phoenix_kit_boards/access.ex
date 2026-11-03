@@ -66,6 +66,24 @@ defmodule PhoenixKitBoards.Access do
     end
   end
 
+  @doc """
+  Whether `user` may see the boards of `scope` listed — what a list of a place's
+  boards (`PhoenixKitBoards.Web.BoardsPanel`) asks before showing any of them.
+
+  The host's `:view` rule; and for the unscoped boards (`nil`), the `"boards"`
+  admin permission as well. Those are the boards `/admin/boards` lists, and
+  `can_open?/3` opens them for admins only — a list that showed them to anyone
+  else would publish their names and previews behind tiles that do not open.
+  """
+  @spec can_list?(map() | nil, Boards.scope()) :: boolean()
+  def can_list?(user, nil), do: user_admin?(user) and can?(:view, user, nil)
+  def can_list?(user, scope), do: can?(:view, user, scope)
+
+  defp user_admin?(%PhoenixKit.Users.Auth.User{} = user),
+    do: user |> Scope.for_user() |> admin?()
+
+  defp user_admin?(_), do: false
+
   @doc "Whether the session holds the `\"boards\"` admin permission."
   @spec admin?(term()) :: boolean()
   def admin?(scope) when is_struct(scope, Scope), do: Scope.can?(scope, "boards")

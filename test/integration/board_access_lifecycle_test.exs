@@ -40,6 +40,23 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     )
   end
 
+  # The avatar title and cursor label every other viewer gets. Since the user
+  # route, those viewers are not all admins — and it was the email address.
+  test "peers are shown a display name, never the email address", ctx do
+    Phoenix.PubSub.subscribe(
+      PhoenixKit.PubSubHelper.pubsub(),
+      "phoenix_kit_boards:#{ctx.board.uuid}"
+    )
+
+    {:ok, _lv, html} = open(ctx.board, ctx.other)
+    [local, _domain] = String.split(ctx.other.email, "@")
+
+    assert_receive {:board_join, %{name: name}, _from}
+    assert name == local
+    refute html =~ ctx.other.email
+    assert html =~ "#{local} (you)"
+  end
+
   test "making a shared board private disconnects an existing viewer", ctx do
     {:ok, lv, _} = open(ctx.board, ctx.other)
     {:ok, _} = Boards.set_visibility(ctx.board, "private", ctx.owner.uuid)

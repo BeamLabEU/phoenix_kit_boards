@@ -199,9 +199,14 @@ defmodule PhoenixKitBoards.Quick do
 
   # Shrink the text and its box together. Clamping only the picture grid's
   # start leaves the long note drawn through the pictures and off the canvas.
-  defp fit_note(%{"geometry" => %{"w" => w, "h" => h}} = shape, {max_w, max_h}) do
-    font_size = max(1, floor(@font_size * min(1, min(max_w / w, max_h / h))))
-    scale = font_size / @font_size
+  # Relative to the shape's own size, since `note_shape/1` has already fitted
+  # it to the whole canvas once.
+  defp fit_note(
+         %{"geometry" => %{"w" => w, "h" => h}, "style" => %{"font_size" => size}} = shape,
+         {max_w, max_h}
+       ) do
+    font_size = max(1, floor(size * min(1, min(max_w / max(w, 1), max_h / max(h, 1)))))
+    scale = font_size / size
 
     shape
     |> put_in(["style", "font_size"], font_size)
@@ -284,15 +289,17 @@ defmodule PhoenixKitBoards.Quick do
       "kind" => "text",
       "uuid" => UUIDv7.generate(),
       "style" => %{"color" => @note_color, "font_size" => @font_size},
-      "geometry" => %{
-        "x" => round((canvas_w - width) / 2),
-        "y" => round((canvas_h - height) / 2),
-        "w" => round(width),
-        "h" => round(height)
-      },
+      "geometry" => %{"w" => round(width), "h" => round(height)},
       "metadata" => %{"title" => Enum.join(lines, "\n")}
     }
+    # A note alone on its board must fit on it too: at the full font size,
+    # twenty lines are already taller than the canvas.
+    |> fit_note({canvas_w - 2 * @margin, canvas_h - 2 * @margin})
+    |> centre_on({canvas_w, canvas_h})
   end
+
+  defp centre_on(%{"geometry" => %{"w" => w, "h" => h}} = shape, {canvas_w, canvas_h}),
+    do: put_geometry(shape, round((canvas_w - w) / 2), round((canvas_h - h) / 2))
 
   @doc false
   def image_shape(file, url, box \\ @image_box) do
@@ -325,7 +332,8 @@ defmodule PhoenixKitBoards.Quick do
   defp fit(_file, {box_w, box_h}), do: {round(box_w), round(box_h)}
 
   # Hard-wrapped: point text does not wrap, so a pasted paragraph would run off
-  # the canvas as one line.
+  # the canvas as one line. Measured in characters, as the box width is: in
+  # bytes, any text outside ASCII wrapped at half the width or less.
   defp wrap(text) do
     text
     |> String.split(~r/\R/)
@@ -339,22 +347,22 @@ defmodule PhoenixKitBoards.Quick do
     line
     |> String.split(" ", trim: true)
     |> Enum.flat_map(&break_long_word/1)
-    |> Enum.reduce([], fn word, acc ->
-      case acc do
-        [current | rest] when byte_size(current) + 1 + byte_size(word) <= @wrap_at ->
-          [current <> " " <> word | rest]
-
-        _ ->
-          [word | acc]
-      end
-    end)
+    |> Enum.reduce([], &add_word/2)
     |> Enum.reverse()
   end
 
-  defp break_long_word(word) when byte_size(word) <= @wrap_at, do: [word]
+  defp add_word(word, []), do: [word]
+
+  defp add_word(word, [current | rest] = lines) do
+    if String.length(current) + 1 + String.length(word) <= @wrap_at,
+      do: [current <> " " <> word | rest],
+      else: [word | lines]
+  end
 
   defp break_long_word(word) do
-    word |> String.graphemes() |> Enum.chunk_every(@wrap_at) |> Enum.map(&Enum.join/1)
+    if String.length(word) <= @wrap_at,
+      do: [word],
+      else: word |> String.graphemes() |> Enum.chunk_every(@wrap_at) |> Enum.map(&Enum.join/1)
   end
 
   defp normalize_note(text) do

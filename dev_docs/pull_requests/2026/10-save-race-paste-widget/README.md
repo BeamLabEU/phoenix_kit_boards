@@ -15,3 +15,7 @@ collection layout, preview task limits and viewport teardown. It strengthens
 concurrency coverage using independent PostgreSQL connections.
 
 There is no migration, version bump or package release in the review follow-up.
+
+A second pass, [CLAUDE_REVIEW.md](CLAUDE_REVIEW.md), fixes the component's undeclared
+`paste`/`script_nonce` attributes, long notes off the canvas, and a paste queue
+left waiting by a refused upload.

@@ -44,7 +44,9 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     * `scope` — `{type, id}` naming the place; each a string, integer or atom
       (`{"project", uuid}`, `{"order", 1001}`, `{"page", "/docs/setup"}`), kept as
       strings, which is what the `:authorize` hook is given. `nil` is the boards
-      that belong nowhere; a place with a missing id shows nothing at all
+      that belong nowhere — the ones `/admin/boards` lists — and like them is
+      shown only to users holding the `"boards"` admin permission; a place with
+      a missing id shows nothing at all
     * `label` — what the place's media folder is called, and a small heading
     * `show_label` — `false` to keep the label for the folder name but not draw
       it (default `true`), for a page that already has its own heading
@@ -193,18 +195,17 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     user = socket.assigns.user
     valid? = socket.assigns.scope_ok?
 
+    can_view? = valid? and Access.can_list?(user, scope)
+
     socket
-    |> assign(:can_view?, valid? and Access.can?(:view, user, scope))
-    |> assign(:can_create?, valid? and Access.can?(:create, user, scope))
+    |> assign(:can_view?, can_view?)
+    |> assign(:can_create?, can_view? and Access.can?(:create, user, scope))
   end
 
   defp reset_context(%{assigns: %{initialized?: true}} = socket, true) do
-    socket =
-      Enum.reduce(socket.assigns.uploads.quick_image.entries, socket, fn entry, acc ->
-        cancel_upload(acc, :quick_image, entry.ref)
-      end)
-
-    assign(socket,
+    socket
+    |> cancel_image_entries()
+    |> assign(
       show_all?: false,
       renaming: nil,
       error: nil,
@@ -543,9 +544,18 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         end
 
       {:error, message} ->
-        # Not consumed: the entries are dropped with the upload.
-        {:noreply, fail(socket, message)}
+        # Dropped, not left behind: entries still on the upload would ride into
+        # the next board made here, and while their refs are live the paste
+        # hook waits for them — with no cancel button to clear them once the
+        # new-board tile is gone, it would wait for good.
+        {:noreply, socket |> cancel_image_entries() |> fail(message)}
     end
+  end
+
+  defp cancel_image_entries(socket) do
+    Enum.reduce(socket.assigns.uploads.quick_image.entries, socket, fn entry, acc ->
+      cancel_upload(acc, :quick_image, entry.ref)
+    end)
   end
 
   defp save_image_collection(socket, text) do
@@ -619,7 +629,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp allow_create(socket) do
     assigns = socket.assigns
 
-    if assigns.scope_ok? and Access.can?(:view, assigns.user, assigns.scope) and
+    if assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope) and
          Access.can?(:create, assigns.user, assigns.scope),
        do: :ok,
        else: {:error, "You cannot add boards here."}
@@ -636,7 +646,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   # The board the browser named, only if it is in THIS widget's place and the
   # user may see it. An id from anywhere else is as good as none.
   defp visible_board(%{assigns: assigns}, id) do
-    with true <- assigns.scope_ok? and Access.can?(:view, assigns.user, assigns.scope),
+    with true <- assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope),
          board when not is_nil(board) <- Boards.get_board(id, include_data: false) do
       if Boards.scope_of(board) == assigns.scope and
            Boards.visible_to?(board, assigns.user_uuid),

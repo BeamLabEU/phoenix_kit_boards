@@ -107,6 +107,17 @@ defmodule PhoenixKitBoards.Integration.AccessTest do
       refute Access.can_open?(unscoped, ctx.owner, nil)
     end
 
+    # The list must not show what the board page will not open: an unscoped
+    # panel used to list the admin boards' names and previews to anyone.
+    test "the boards with no place are listed for admins only, too", ctx do
+      refute Access.can_list?(ctx.owner, nil)
+      refute Access.can_list?(nil, nil)
+      assert Access.can_list?(ctx.owner, {"project", "alpha"})
+
+      configure(:allow_alpha)
+      refute Access.can_list?(ctx.owner, {"project", "beta"})
+    end
+
     test "nobody signed in opens nothing private", ctx do
       refute Access.can_open?(ctx.mk.(%{"visibility" => "private"}), nil)
     end

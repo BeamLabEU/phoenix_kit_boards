@@ -25,6 +25,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.Modules.Storage
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
+  alias PhoenixKit.Users.Auth.User
   alias PhoenixKitBoards.{Access, Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
   alias PhoenixKitBoards.Web.RuntimeHooks
@@ -1212,11 +1213,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   defp identity(socket) do
     user = socket.assigns[:phoenix_kit_current_user]
     uuid = (user && Map.get(user, :uuid)) || "anon"
-    name = (user && (Map.get(user, :email) || Map.get(user, :username))) || "Guest"
     # A per-connection id so two tabs of the same user are distinct peers.
     peer_id = "#{uuid}:#{Base.encode16(:crypto.strong_rand_bytes(3), case: :lower)}"
-    %{id: peer_id, name: to_string(name), color: color_for(peer_id)}
+    %{id: peer_id, name: display_name(user), color: color_for(peer_id)}
   end
+
+  # What every other viewer is shown as this person's avatar and cursor label,
+  # so never the email address: since the user route, the people sharing a
+  # board are not all admins. Core's one answer — the name they gave, their
+  # username, or the email's local part — is what the rest of PhoenixKit shows.
+  defp display_name(%User{} = user), do: User.display_name(user)
+  defp display_name(_), do: "Guest"
 
   defp color_for(seed) do
     Enum.at(@cursor_colors, rem(:erlang.phash2(seed), length(@cursor_colors)))

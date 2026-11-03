@@ -61,6 +61,39 @@ defmodule PhoenixKitBoards.QuickLayoutTest do
     for a <- boxes, b <- boxes, a != b, do: refute(overlap?(a, b))
   end
 
+  test "a long note alone fits on its board, centred" do
+    # Twenty lines at the full font size were already taller than the canvas;
+    # forty ran from y=-4100 to y=12100.
+    shape = Quick.note_shape(Enum.map_join(1..40, "\n", &"line #{&1}"))
+    {x1, y1, x2, y2} = box(shape)
+    {w, h} = Boards.canvas_size()
+
+    assert inside_canvas?({x1, y1, x2, y2})
+    assert_in_delta (x1 + x2) / 2, w / 2, 2
+    assert_in_delta (y1 + y2) / 2, h / 2, 2
+    assert shape["style"]["font_size"] < 300
+  end
+
+  test "a short note keeps the full font size" do
+    assert %{"style" => %{"font_size" => 300}} = Quick.note_shape("Buy milk")
+  end
+
+  test "text outside ASCII wraps at the same width as ASCII" do
+    lengths = fn text ->
+      Quick.note_shape(text)["metadata"]["title"]
+      |> String.split("\n")
+      |> Enum.map(&String.length/1)
+    end
+
+    cyrillic = lengths.(String.duplicate("привет мир ", 30))
+    ascii = lengths.(String.duplicate("hello you ", 30))
+
+    assert Enum.all?(cyrillic ++ ascii, &(&1 <= 40))
+    # In bytes, a Cyrillic line stopped at 21 characters.
+    assert Enum.max(cyrillic) > 30
+    assert Enum.max(ascii) > 30
+  end
+
   test "pictures keep their proportions" do
     [wide, tall] =
       Quick.layout([{%{width: 1600, height: 900}, "/w"}, {%{width: 900, height: 1600}, "/t"}], "")

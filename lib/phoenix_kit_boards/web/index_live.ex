@@ -12,7 +12,7 @@ defmodule PhoenixKitBoards.Web.IndexLive do
     {:ok,
      socket
      |> assign(:page_title, "Boards")
-     |> assign(:boards, if(connected?(socket), do: Boards.list_boards(), else: []))}
+     |> assign(:boards, if(connected?(socket), do: list(), else: []))}
   end
 
   @impl true
@@ -30,13 +30,16 @@ defmodule PhoenixKitBoards.Web.IndexLive do
 
   @impl true
   def handle_event("delete", %{"id" => id}, socket) do
-    case Boards.get_board(id) do
+    case Boards.get_board(id, include_data: false) do
       nil ->
-        {:noreply, socket}
+        {:noreply, load_boards(socket)}
 
       board ->
         case Boards.delete_board(board) do
           {:ok, _board} ->
+            {:noreply, load_boards(socket)}
+
+          {:error, :not_found} ->
             {:noreply, load_boards(socket)}
 
           {:error, _changeset} ->
@@ -45,7 +48,12 @@ defmodule PhoenixKitBoards.Web.IndexLive do
     end
   end
 
-  defp load_boards(socket), do: assign(socket, :boards, Boards.list_boards())
+  defp load_boards(socket), do: assign(socket, :boards, list())
+
+  # Names and dates only. Since boards can be made from any page that embeds
+  # the panel, this lists every one of them, and with their canvases each row
+  # would hold a whole drawing in this process for nothing.
+  defp list, do: Boards.list_boards(include_data: false)
 
   defp current_user_uuid(socket) do
     case socket.assigns[:phoenix_kit_current_user] do

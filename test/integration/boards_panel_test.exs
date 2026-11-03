@@ -255,6 +255,22 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert Boards.count_for_scope(nil, me.uuid) == 1
     end
 
+    # `/admin/boards` lists these and the board page opens them for admins
+    # only; an unscoped panel showed their names and previews to anyone, and
+    # let them pin them, behind tiles that answered "Board not found".
+    test "the boards with no place are not shown to a user who is not an admin",
+         %{conn: conn, me: me, other: other} do
+      {:ok, board} = Boards.create_board(%{"name" => "Global plan", "created_by" => other.uuid})
+      {:ok, lv, html} = mount_panel(conn, me, scope: nil)
+
+      refute html =~ "Global plan"
+      fire(lv, "pin", %{"id" => board.uuid})
+      fire(lv, "create_empty", %{})
+
+      assert Boards.get_board(board.uuid).pinned_at == nil
+      assert Boards.count_for_scope(nil, me.uuid) == 1
+    end
+
     test "a private-only replacement cannot reuse a shared selection", %{conn: conn, me: me} do
       {:ok, lv, _} = mount_panel(conn, me, open: :new_tab)
 
@@ -477,6 +493,33 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       assert Boards.count_for_scope(@scope, me.uuid) == 0
       assert render(lv) =~ "Could not save the image"
+    end
+
+    # Refused after the bytes arrived (the host withdrew :create meanwhile).
+    # The entries were left on the upload: the paste hook waits while any ref
+    # is live, so every later paste queued behind them for good, and the next
+    # board made here would have taken them along.
+    test "an image refused at the end is dropped, not left on the upload",
+         %{conn: conn, me: me} do
+      defmodule CreateRevoked do
+        def can?(:create, _user, _scope), do: false
+        def can?(_action, _user, _scope), do: true
+      end
+
+      {:ok, lv, _} = mount_panel(conn, me)
+      Application.put_env(:phoenix_kit_boards, :authorize, {CreateRevoked, :can?})
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "late.png", content: "bytes", type: "image/png"}
+        ])
+
+      render_upload(input, "late.png")
+      html = render(lv)
+
+      assert Boards.count_for_scope(@scope, me.uuid) == 0
+      assert html =~ "You cannot add boards here."
+      refute html =~ ~r/data-phx-active-refs="[^"]+"/
     end
 
     test "only images are accepted", %{conn: conn, me: me} do

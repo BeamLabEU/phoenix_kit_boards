@@ -72,9 +72,14 @@ defmodule PhoenixKitBoards.Boards do
 
   # ── Board CRUD ────────────────────────────────────────────────────────────
 
-  @doc "All boards, newest first."
-  def list_boards do
-    repo().all(from(b in Board, order_by: [desc: b.updated_at]))
+  @doc """
+  All boards, newest first. Pass `include_data: false` to leave out the canvas
+  documents — every board of every place, which a list of names has no use for.
+  """
+  def list_boards(opts \\ []) do
+    from(b in Board, order_by: [desc: b.updated_at])
+    |> select_data(opts)
+    |> repo().all()
   end
 
   @typedoc "A place boards belong to: `{scope_type, scope_id}`, or `nil` for the unscoped ones."
@@ -349,12 +354,18 @@ defmodule PhoenixKitBoards.Boards do
     # Uploads write the folder pointer independently of the editor's struct.
     # Read it under a row lock so deletion cannot miss a folder just created
     # by this or another session.
+    #
+    # A row someone else deleted first is an answer, not a raise: the panel
+    # runs inside the host's LiveView, and two people deleting the same board
+    # would otherwise take the second one's whole page down.
     result =
       repo().transaction(fn ->
-        current = repo().one!(from(b in Board, where: b.uuid == ^board.uuid, lock: "FOR UPDATE"))
-
-        case repo().delete(current) do
-          {:ok, deleted} -> deleted
+        with %Board{} = current <-
+               repo().one(from(b in Board, where: b.uuid == ^board.uuid, lock: "FOR UPDATE")),
+             {:ok, deleted} <- repo().delete(current) do
+          deleted
+        else
+          nil -> repo().rollback(:not_found)
           {:error, reason} -> repo().rollback(reason)
         end
       end)

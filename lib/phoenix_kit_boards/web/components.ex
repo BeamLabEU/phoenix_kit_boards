@@ -22,6 +22,8 @@ defmodule PhoenixKitBoards.Web.Components do
   attr(:visibility_options, :list, default: [:private, :shared])
   attr(:default_visibility, :atom, default: :shared)
   attr(:actions, :list, default: [:empty, :text, :image])
+  attr(:paste, :boolean, default: true)
+  attr(:script_nonce, :string, default: nil)
   attr(:limit, :integer, default: 11)
   attr(:open, :atom, default: :navigate, values: [:navigate, :new_tab])
   attr(:return_to, :string, default: nil)

@@ -112,7 +112,9 @@ With no hook any signed-in user may view and create. A hook that raises, exits o
 answers anything but a boolean **denies**. The hook can narrow access, never
 widen it: **private is always its creator's** (users holding the `boards` admin
 permission may still open any board, as they always could on `/admin/boards`).
-The panel renders nothing for a place the user may not view.
+The panel renders nothing for a place the user may not view. Boards with no
+place (`scope={nil}`) are the admin list's own, so a panel for them shows only
+to those admins.
 
 ### Where a board's files go
 

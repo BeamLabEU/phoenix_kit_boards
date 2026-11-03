@@ -93,7 +93,9 @@ Implemented via `pk_dep/3` in `mix.exs` — never hand-edit a path dep in.
 - **`PhoenixKitBoards.Access`** (`access.ex`) — who may open a board / act in a
   place. The module's rule (private is the creator's) plus the host's
   `:authorize` hook, which **fails closed**; admins with the `boards` permission
-  open anything.
+  open anything. A board with no place opens for those admins only, and lists
+  ask `can_list?/2`, which applies the same rule — a list must not show what the
+  board page will not open.
 - **`PhoenixKitBoards.MediaFolders`** (`media_folders.ex`) — one media folder per
   board, on core's `ResourceFolders` convention. The *parent* is decided when the
   board is created and kept in `folder_parent_uuid` (the root is stored as the
