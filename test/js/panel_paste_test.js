@@ -98,6 +98,20 @@ m.hook.updated();
 assert.deepStrictEqual(m.hook.imageQueue, []);
 assert.strictEqual(m.sent.length, 2, "queued images were discarded on context change");
 
+// A read-only refresh drops queued clipboard data and leaves new pastes alone.
+m = mount();
+m.uploadInput.dataset.phxActiveRefs = "picker-ref";
+m.listeners.paste(paste(plainNode, { files: [png], text: "waiting" }));
+m.el.dataset.paste = "off";
+m.hook.updated();
+e = paste(plainNode, { files: [png], text: "read only" });
+m.listeners.paste(e);
+assert.ok(!e.prevented);
+m.uploadInput.dataset.phxActiveRefs = "";
+m.el.dataset.paste = "on";
+m.hook.updated();
+assert.deepStrictEqual(m.sent, []);
+
 // Only images count; other files are left alone.
 m = mount();
 m.listeners.paste(paste(plainNode, { files: [{ type: "application/pdf" }] }));

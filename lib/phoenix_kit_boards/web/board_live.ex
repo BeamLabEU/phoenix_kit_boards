@@ -118,14 +118,24 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   defp mount_connected(id, socket) do
-    case Boards.get_board(id) do
-      nil ->
-        not_found(socket)
+    case UUIDv7.cast(id) do
+      {:ok, uuid} ->
+        topic = topic(uuid)
+        # Subscribe before reading the snapshot. Any edit committed while the
+        # board opens will already be in the row or queued in our mailbox.
+        PubSubHelper.subscribe(topic)
 
-      board ->
-        if may_open?(board, socket),
-          do: open_board(board, socket),
-          else: not_found(socket)
+        with %{} = board <- Boards.get_board(uuid),
+             true <- may_open?(board, socket) do
+          open_board(board, socket, topic)
+        else
+          _ ->
+            PubSub.unsubscribe(PubSubHelper.pubsub(), topic)
+            not_found(socket)
+        end
+
+      :error ->
+        not_found(socket)
     end
   end
 
@@ -165,12 +175,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   defp back_to(_action, _params), do: Paths.boards()
 
-  defp open_board(board, socket) do
+  defp open_board(board, socket, topic) do
     {board, canvas, migrated} = migrate_embedded_images(board, socket)
     me = identity(socket)
-    topic = topic(board.uuid)
 
-    PubSubHelper.subscribe(topic)
     # Told to the room like any other edit: whoever already has the board open
     # is holding the embedded copies, and would write them straight back the
     # next time they touched one of those shapes.
@@ -225,6 +233,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
        progress: &handle_image_progress/3
      )
      # Deliberately nothing pushed here. See `handle_event("board:ready")`.
+     |> assign(:sync_ready?, false)
      |> assign(:peers, %{})
      |> assign(:peer_monitors, %{})
      |> assign(:unfurls, %{})
@@ -686,11 +695,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # handlers are idempotent (`BoardLink.ensure` reuses a live connection,
   # `setPrefs` re-applies the same set), so the duplicate costs nothing and
   # removes any need to reason about which hook won the race.
-  def handle_event("board:ready", _params, socket) do
+  def handle_event("board:ready", params, socket) do
     board = socket.assigns.board
 
     {:noreply,
      socket
+     |> sync_on_ready(params)
      |> push_event("board:prefs", %{prefs: load_prefs(socket)})
      # Lets the client open the ephemeral channel — cursors and in-flight
      # drags. It falls back to relaying them through here if the host hasn't
@@ -895,6 +905,23 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp sync_on_ready(socket, %{"source" => "cursors"}), do: socket
+
+  defp sync_on_ready(%{assigns: %{sync_ready?: false} = assigns} = socket, _params) do
+    # Changes can arrive while the runtime hook bundle is still loading. The
+    # browser starts from initial_canvas, so catch it up once BoardSync listens.
+    delta = diff(Boards.annotations(assigns.initial_canvas), assigns.annotations)
+    socket = assign(socket, :sync_ready?, true)
+
+    if empty_delta?(delta) do
+      socket
+    else
+      socket |> note_peer_arrivals(delta["created"]) |> push_event("board:apply", delta)
+    end
+  end
+
+  defp sync_on_ready(socket, _params), do: socket
 
   # Arrives from a browser, so it can be anything. Bounded and constrained to
   # the shape a tool key has — it is relayed to every peer and ends up in a
@@ -1128,9 +1155,11 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     if empty_delta?(effective) do
       socket
     else
-      socket
-      |> note_peer_arrivals(effective["created"])
-      |> push_event("board:apply", effective)
+      socket = note_peer_arrivals(socket, effective["created"])
+
+      if socket.assigns.sync_ready?,
+        do: push_event(socket, "board:apply", effective),
+        else: socket
     end
   end
 

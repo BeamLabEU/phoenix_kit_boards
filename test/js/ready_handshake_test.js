@@ -62,7 +62,7 @@ const BoardCursors = eval("(" + hookLiteral("BoardCursors") + ")");
 
 // A hook instance that records the ORDER of handler registrations and pushes,
 // which is the whole question here.
-function mount(hookLiteralObj) {
+function mount(hookLiteralObj, reconnect = false) {
   const events = [];
   const hook = Object.create(hookLiteralObj);
 
@@ -74,11 +74,12 @@ function mount(hookLiteralObj) {
     parentElement: { addEventListener: () => {}, removeEventListener: () => {} }
   };
   hook.handleEvent = (name) => events.push({ kind: "handle", name });
-  hook.pushEvent = (name) => events.push({ kind: "push", name });
+  hook.pushEvent = (name, payload) => events.push({ kind: "push", name, payload });
   hook.upload = () => {};
 
   try {
     hookLiteralObj.mounted.call(hook);
+    if (reconnect) hook.reconnected();
   } catch (error) {
     assert.fail(`mounted threw: ${error && error.message}`);
   }
@@ -93,6 +94,10 @@ for (const [name, literal] of [["BoardSync", BoardSync], ["BoardCursors", BoardC
   const pings = events.filter((e) => e.kind === "push" && e.name === "board:ready");
 
   assert.strictEqual(pings.length, 1, `${name} should ping exactly once, got ${pings.length}`);
+  assert.deepStrictEqual(pings[0].payload, name === "BoardCursors" ? { source: "cursors" } : {});
+
+  const reconnected = mount(literal, true);
+  assert.deepStrictEqual(reconnected.slice(events.length), pings);
 }
 
 // ── the ping is the LAST thing, after every handler ──────────────────────────

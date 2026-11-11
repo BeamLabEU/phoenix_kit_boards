@@ -196,28 +196,35 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     valid? = socket.assigns.scope_ok?
 
     can_view? = valid? and Access.can_list?(user, scope)
+    can_create? = can_view? and Access.can?(:create, user, scope)
 
     socket
+    |> clear_capture(socket.assigns[:can_create?] == true and not can_create?)
     |> assign(:can_view?, can_view?)
-    |> assign(:can_create?, can_view? and Access.can?(:create, user, scope))
+    |> assign(:can_create?, can_create?)
   end
 
   defp reset_context(%{assigns: %{initialized?: true}} = socket, true) do
     socket
-    |> cancel_image_entries()
+    |> clear_capture(true)
     |> assign(
       show_all?: false,
       renaming: nil,
       error: nil,
-      note: "",
-      text_open?: false,
       created: nil,
-      paste_text: nil,
       visibility: socket.assigns.default_visibility
     )
   end
 
   defp reset_context(socket, _changed), do: socket
+
+  defp clear_capture(socket, true) do
+    socket
+    |> cancel_image_entries()
+    |> assign(note: "", text_open?: false, paste_text: nil)
+  end
+
+  defp clear_capture(socket, false), do: socket
 
   defp constrain_visibility(socket) do
     if socket.assigns[:visibility] in socket.assigns.visibility_options,
@@ -409,7 +416,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   # Said just before pasted images are uploaded: whatever text came with them
   # goes on the same board, and the finished upload is announced as a paste.
   def handle_event("paste_context", %{"text" => text}, socket) when is_binary(text) do
-    if socket.assigns.paste? and :image in socket.assigns.actions,
+    if socket.assigns.paste? and :image in socket.assigns.actions and allow_create(socket) == :ok,
       do: {:noreply, assign(socket, :paste_text, String.slice(text, 0, @note_max))},
       else: {:noreply, socket}
   end
@@ -548,12 +555,12 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         # the next board made here, and while their refs are live the paste
         # hook waits for them — with no cancel button to clear them once the
         # new-board tile is gone, it would wait for good.
-        {:noreply, socket |> cancel_image_entries() |> fail(message)}
+        {:noreply, socket |> clear_capture(true) |> load() |> fail(message)}
     end
   end
 
   defp cancel_image_entries(socket) do
-    Enum.reduce(socket.assigns.uploads.quick_image.entries, socket, fn entry, acc ->
+    Enum.reduce(active_image_entries(socket), socket, fn entry, acc ->
       cancel_upload(acc, :quick_image, entry.ref)
     end)
   end
@@ -720,8 +727,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       class={["group/panel space-y-3 outline-none", @class]}
       data-boards-panel
       phx-hook={if @paste?, do: "BoardsPanelPaste"}
-      tabindex={if @paste?, do: "-1"}
-      data-paste={if @paste?, do: "on", else: "off"}
+      tabindex={if @paste? and @can_create?, do: "-1"}
+      data-paste={if @paste? and @can_create?, do: "on", else: "off"}
       data-paste-images={if :image in @actions, do: "on", else: "off"}
       data-paste-text={if :text in @actions, do: "on", else: "off"}
       data-paste-context={inspect({@user_uuid, @scope, @scope_ok?})}
@@ -734,7 +741,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             paste can reach it whatever the tile is showing (the note form
             replaces it). The tile's camera button is a label for this. --%>
       <form
-        :if={:image in @actions}
+        :if={@can_create? and :image in @actions}
         id={"#{@id}-image"}
         phx-change="validate_image"
         phx-target={@myself}

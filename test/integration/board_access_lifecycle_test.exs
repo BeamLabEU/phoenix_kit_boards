@@ -13,6 +13,31 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     def can?(_action, _user, _scope), do: false
   end
 
+  defmodule EditDuringMount do
+    def can?(:view, user, scope) do
+      unless Process.get(__MODULE__) do
+        Process.put(__MODULE__, :saved)
+
+        Task.async(fn ->
+          [board] = Boards.list_for_scope(scope, user.uuid)
+          base = Boards.annotations(Boards.load_canvas(board))
+
+          {:ok, _, _, _, delta} =
+            Boards.apply_edit(board, base, base ++ [Quick.note_shape("Saved during mount")])
+
+          Phoenix.PubSub.broadcast(
+            PhoenixKit.PubSubHelper.pubsub(),
+            "phoenix_kit_boards:#{board.uuid}",
+            {:board_delta, delta, self()}
+          )
+        end)
+        |> Task.await()
+      end
+
+      true
+    end
+  end
+
   setup do
     owner = user_fixture()
     other = user_fixture()
@@ -99,8 +124,29 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     assert_redirect(lv, "/projects")
   end
 
+  test "an edit saved during mount reaches the new viewer", ctx do
+    Application.put_env(:phoenix_kit_boards, :authorize, {EditDuringMount, :can?})
+
+    # Use a noncanonical spelling to exercise the topic's UUID normalization.
+    {:ok, lv, _} = open(%{ctx.board | uuid: String.upcase(ctx.board.uuid)}, ctx.owner)
+
+    [_, added] =
+      ctx.board.uuid |> Boards.get_board() |> Boards.load_canvas() |> Boards.annotations()
+
+    render_hook(lv, "board:ready", %{"source" => "cursors"})
+    assert_push_event(lv, "board:channel", %{})
+    refute_push_event(lv, "board:apply", %{})
+
+    render_hook(lv, "board:ready", %{})
+    assert_push_event(lv, "board:apply", %{"created" => [^added]})
+
+    render_hook(lv, "board:ready", %{})
+    refute_push_event(lv, "board:apply", %{})
+  end
+
   test "delayed peer messages cannot roll a viewer back from the committed board", ctx do
     {:ok, lv, _} = open(ctx.board, ctx.owner)
+    render_hook(lv, "board:ready", %{})
     base = Boards.annotations(Boards.load_canvas(ctx.board))
     first = put_in(hd(base), ["metadata", "title"], "First edit")
     last = put_in(first, ["metadata", "title"], "Latest edit")
@@ -122,6 +168,7 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
 
   test "a late create does not resurrect a shape already deleted in storage", ctx do
     {:ok, lv, _} = open(ctx.board, ctx.owner)
+    render_hook(lv, "board:ready", %{})
     base = Boards.annotations(Boards.load_canvas(ctx.board))
     peer = Quick.note_shape("Already deleted")
     {:ok, _, _, _, created} = Boards.apply_edit(ctx.board, base, base ++ [peer])

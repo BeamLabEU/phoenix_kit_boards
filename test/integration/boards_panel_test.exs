@@ -44,6 +44,11 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
     end
   end
 
+  defmodule ViewOnly do
+    def can?(:view, _user, _scope), do: true
+    def can?(:create, _user, _scope), do: false
+  end
+
   defp board!(user, name, attrs \\ %{}) do
     base = %{
       "name" => name,
@@ -206,11 +211,6 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
   describe "the host decides who sees the place" do
     defmodule Deny do
       def can?(_action, _user, _scope), do: false
-    end
-
-    defmodule ViewOnly do
-      def can?(:view, _user, _scope), do: true
-      def can?(:create, _user, _scope), do: false
     end
 
     test "refresh rechecks access for a user who lost permission", %{conn: conn, me: me} do
@@ -715,6 +715,43 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert board.preview["count"] == 1
       assert board.preview["text"] == nil
       refute html =~ "Board created"
+    end
+
+    test "a refresh drops pending clipboard uploads when create access is revoked", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, lv, _} = mount_panel(conn, me)
+      paste_context(lv, "Pending caption")
+
+      pending =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "pending.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(pending, "pending.png", 1)
+
+      Application.put_env(:phoenix_kit_boards, :authorize, {ViewOnly, :can?})
+      BoardsPanel.refresh("panel", lv.pid)
+      html = render(lv)
+      assert html =~ ~s(data-paste="off")
+      refute has_element?(lv, "#panel-image input")
+
+      Application.delete_env(:phoenix_kit_boards, :authorize)
+      BoardsPanel.refresh("panel", lv.pid)
+      assert render(lv) =~ ~s(data-paste="on")
+
+      input =
+        file_input(lv, "#panel-image", :quick_image, [
+          %{name: "fresh.png", content: @png, type: "image/png"}
+        ])
+
+      render_upload(input, "fresh.png")
+
+      assert [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert board.name == "fresh"
+      assert board.preview["count"] == 1
+      assert board.preview["text"] == nil
     end
 
     test "canceling the last pasted image discards its text", %{conn: conn, me: me} do

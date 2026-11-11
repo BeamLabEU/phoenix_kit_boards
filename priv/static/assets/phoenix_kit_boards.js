@@ -302,8 +302,12 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // them, which is a board that renders and saves but never shows a
       // cursor.
       //
-      // So the server waits to be asked. Both hooks ask, because either may
-      // mount last and the reply has to arrive when both are listening.
+      // Both hooks ask for the channel token. This ping also tells the server
+      // it can send annotation changes that arrived while the bundle loaded.
+      this.pushEvent("board:ready", {});
+    },
+
+    reconnected() {
       this.pushEvent("board:ready", {});
     },
 
@@ -817,7 +821,11 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       // Same reason as BoardSync — see the note there. The cursor channel's
       // token arrives on `board:channel`, and this hook's handler for it is
       // registered just above.
-      this.pushEvent("board:ready", {});
+      this.pushEvent("board:ready", { source: "cursors" });
+    },
+
+    reconnected() {
+      this.pushEvent("board:ready", { source: "cursors" });
     },
 
     destroyed() {

@@ -13,7 +13,13 @@ defmodule PhoenixKitBoards.BoardSyncTest do
       Boards.blank_canvas() |> Boards.put_annotations([first]) |> Boards.put_sync_revision("one")
 
     socket = %Socket{
-      assigns: %{__changed__: %{}, canvas: canvas, annotations: [first], peer_arrivals: %{}},
+      assigns: %{
+        __changed__: %{},
+        canvas: canvas,
+        annotations: [first],
+        peer_arrivals: %{},
+        sync_ready?: true
+      },
       private: %{live_temp: %{}}
     }
 

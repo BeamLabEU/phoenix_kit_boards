@@ -27,9 +27,11 @@
       // differ on whether a clicked button takes focus (Safari's does not), so
       // after the click settles, the widget takes it if nothing in it did.
       this.onPointerDown = function (e) {
-        if (editable(e.target)) return;
+        if (el.dataset.paste !== "on" || editable(e.target)) return;
         setTimeout(function () {
-          if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
+          if (el.dataset.paste === "on" && !el.contains(document.activeElement)) {
+            el.focus({ preventScroll: true });
+          }
         }, 0);
       };
 
