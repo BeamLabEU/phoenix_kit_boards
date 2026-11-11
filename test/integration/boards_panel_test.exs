@@ -333,7 +333,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
   describe "creating" do
     test "the big + makes an empty quick board in the place and opens it", %{conn: conn, me: me} do
-      {:ok, lv, _} = mount_panel(conn, me, return_to: "/projects/panel")
+      {:ok, lv, _} = mount_panel(conn, me, return_to: "/projects/panel", open: :navigate)
       lv |> element("button[phx-click=create_empty]") |> render_click()
 
       [board] = Boards.list_for_scope(@scope, me.uuid)
@@ -986,6 +986,63 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
   # One match per board row (names also turn up in aria-labels).
   defp rows(html), do: Regex.scan(~r/<li id="panel-[0-9a-f-]{36}"/, html)
+
+  describe "open: :overlay (the default)" do
+    test "a tile opens its board over the page, in the board page's own viewer", %{
+      conn: conn,
+      me: me
+    } do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, html} = mount_panel(conn, me)
+
+      # Buttons, not links: the page stays where it is.
+      assert html =~ ~s(phx-click="open_board")
+      refute html =~ ~s(href="#{PhoenixKitBoards.Paths.user_board(board.uuid)})
+
+      html = fire(lv, "open_board", %{"id" => board.uuid})
+      assert html =~ ~s(role="dialog")
+      assert html =~ ~s(src="#{PhoenixKitBoards.Paths.embedded_board(board.uuid)}")
+      assert html =~ "Q3 plan"
+      assert has_element?(lv, ~s([aria-label="Open in a new tab"]))
+
+      html = fire(lv, "close_board", %{})
+      refute html =~ ~s(role="dialog")
+      refute html =~ "embed=1"
+    end
+
+    test "the big + opens the new board in the overlay, not on another page", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, lv, _} = mount_panel(conn, me)
+      html = lv |> element("button[phx-click=create_empty]") |> render_click()
+
+      [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert html =~ ~s(src="#{PhoenixKitBoards.Paths.embedded_board(board.uuid)}")
+    end
+
+    test "someone else's private board, or another place's, does not open", %{
+      conn: conn,
+      me: me,
+      other: other
+    } do
+      private = board!(other, "Their secret", %{"visibility" => "private"})
+      elsewhere = board!(me, "Elsewhere", %{"scope_id" => "other-place"})
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      for board <- [private, elsewhere] do
+        html = fire(lv, "open_board", %{"id" => board.uuid})
+        refute html =~ "embed=1"
+        refute html =~ board.name
+      end
+    end
+
+    test "an unknown open mode falls back to the overlay", %{conn: conn, me: me} do
+      board!(me, "Q3 plan")
+      {:ok, _lv, html} = mount_panel(conn, me, open: :sideways)
+      assert html =~ ~s(phx-click="open_board")
+    end
+  end
 
   describe "export as PDF" do
     test "every tile offers it", %{conn: conn, me: me} do

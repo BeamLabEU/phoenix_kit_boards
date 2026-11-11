@@ -65,7 +65,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       needs, for a host that enforces a Content-Security-Policy
     * `limit` — tiles shown before "Show all" (default 11, so a row of four fills
       neatly with the new-board tile)
-    * `open` — `:navigate` (default) or `:new_tab`: what opening a board does
+    * `open` — what opening a board does: `:overlay` (default) opens it over
+      the page in the same viewer as the board page (the board page itself,
+      framed), with a close button, and leaves the person where they were;
+      `:navigate` goes to the board page; `:new_tab` opens it in a new tab
     * `return_to` — the page's own path, so an opened board can link back to it
     * `poll` — milliseconds between refreshes (default 5000; `0` for none)
     * `class` — extra classes for the wrapper
@@ -181,7 +184,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:folder, assigns[:folder])
     |> assign(:actions, actions(assigns[:actions]))
     |> assign(:limit, assigns[:limit] || @default_limit)
-    |> assign(:open, assigns[:open] || :navigate)
+    |> assign(:open, open_mode(assigns[:open]))
     |> assign(:return_to, Paths.local_path(assigns[:return_to]))
     |> assign(:poll, Map.get(assigns, :poll, @default_poll))
     |> assign(:class, assigns[:class])
@@ -294,6 +297,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:created, nil)
     |> assign(:paste_text, nil)
     |> assign(:exporting, nil)
+    |> assign(:viewing, nil)
     |> assign(:export_seq, 0)
     |> assign(:visibility, socket.assigns.default_visibility)
     |> assign(:boards, [])
@@ -523,6 +527,21 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end
   end
 
+  def handle_event("open_board", %{"id" => id}, socket) do
+    case visible_board(socket, id) do
+      {:ok, board} -> {:noreply, assign(socket, :viewing, viewing(board))}
+      error -> {:noreply, refuse(socket, error)}
+    end
+  end
+
+  # Closing re-reads the tiles: the board's preview and name may have changed
+  # while it was open.
+  def handle_event("close_board", _params, %{assigns: %{viewing: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("close_board", _params, socket),
+    do: {:noreply, socket |> assign(:viewing, nil) |> load()}
+
   # One at a time: a second click while a board is being drawn for its PDF
   # is ignored rather than starting another copy.
   def handle_event("export_pdf", %{"id" => _id}, %{assigns: %{exporting: %{}}} = socket),
@@ -726,10 +745,18 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp after_create(socket, board) do
     socket = socket |> assign(:error, nil) |> load()
 
-    if socket.assigns.open == :navigate,
-      do: redirect(socket, to: Paths.user_board(board.uuid, socket.assigns.return_to)),
-      else: socket
+    case socket.assigns.open do
+      :navigate -> redirect(socket, to: Paths.user_board(board.uuid, socket.assigns.return_to))
+      :overlay -> assign(socket, :viewing, viewing(board))
+      _ -> socket
+    end
   end
+
+  defp open_mode(mode) when mode in [:navigate, :new_tab, :overlay], do: mode
+  defp open_mode(_), do: :overlay
+
+  defp viewing(board),
+    do: %{id: board.uuid, name: board.name, src: Paths.embedded_board(board.uuid)}
 
   defp create_opts(socket) do
     [
@@ -819,6 +846,57 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             <.icon name="hero-x-mark" class="h-3.5 w-3.5" />
           </button>
         </span>
+      </div>
+
+      <%!-- The open board, over the page: the board page itself in its embedded
+            form (`?embed=1`), framed — the same viewer, live collaboration,
+            uploads and export, under the same access rules as opening it on
+            its own. Escape or the ✕ closes it. --%>
+      <div
+        :if={@viewing}
+        id={"#{@id}-viewer"}
+        class="fixed inset-0 z-[60] flex flex-col bg-black/60 backdrop-blur-sm sm:p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-label={@viewing.name}
+        phx-window-keydown="close_board"
+        phx-key="Escape"
+        phx-target={@myself}
+      >
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden bg-base-100 shadow-2xl sm:rounded-xl">
+          <div class="flex shrink-0 items-center gap-2 border-b border-base-300 px-3 py-2">
+            <.icon name="hero-rectangle-group" class="h-4 w-4 shrink-0 text-base-content/50" />
+            <span class="min-w-0 flex-1 truncate text-sm font-medium">{@viewing.name}</span>
+            <a
+              href={Paths.user_board(@viewing.id, @return_to)}
+              target="_blank"
+              rel="noopener"
+              class="btn btn-ghost btn-xs btn-circle"
+              aria-label="Open in a new tab"
+              title="Open in a new tab"
+            >
+              <.icon name="hero-arrow-top-right-on-square" class="h-4 w-4" />
+            </a>
+            <button
+              type="button"
+              phx-click="close_board"
+              phx-target={@myself}
+              class="btn btn-ghost btn-sm btn-circle"
+              aria-label="Close"
+              title="Close (Esc)"
+            >
+              <.icon name="hero-x-mark" class="h-5 w-5" />
+            </button>
+          </div>
+          <iframe
+            id={"#{@id}-viewer-#{@viewing.id}"}
+            src={@viewing.src}
+            title={@viewing.name}
+            class="min-h-0 w-full flex-1 border-0"
+            allow="fullscreen; clipboard-read; clipboard-write"
+            allowfullscreen
+          ></iframe>
+        </div>
       </div>
 
       <%!-- The board being exported, drawn off screen with the same canvas and
@@ -1052,11 +1130,12 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       id={"#{@id}-#{@board.uuid}"}
       class="group relative flex aspect-square flex-col rounded-xl border border-base-300 bg-base-100 shadow-sm transition-shadow focus-within:z-30 hover:shadow-md"
     >
-      <a
+      <.tile_link
+        open={@open}
         href={@href}
-        target={if @open == :new_tab, do: "_blank"}
-        rel={if @open == :new_tab, do: "noopener"}
-        class="relative min-h-0 flex-1 overflow-hidden rounded-t-[inherit] bg-base-200"
+        board={@board}
+        myself={@myself}
+        class="relative block min-h-0 w-full flex-1 overflow-hidden rounded-t-[inherit] bg-base-200 text-left"
         tabindex="-1"
         aria-hidden="true"
       >
@@ -1082,7 +1161,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         <div :if={@blank?} class="flex h-full items-center justify-center text-base-content/25">
           <.icon name="hero-rectangle-group" class="h-9 w-9" />
         </div>
-      </a>
+      </.tile_link>
 
       <div class="flex min-h-9 items-center gap-1 px-2 py-1.5">
         <.tile_title {assigns} />
@@ -1127,14 +1206,54 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       name="hero-lock-closed"
       class="h-3.5 w-3.5 shrink-0 text-base-content/50"
     />
+    <.tile_link
+      open={@open}
+      href={@href}
+      board={@board}
+      myself={@myself}
+      class="min-w-0 flex-1 truncate text-left text-sm font-medium hover:underline"
+      title={@board.name}
+    >
+      {@board.name}
+    </.tile_link>
+    """
+  end
+
+  # A tile's way into its board: a button that opens the overlay, or a link to
+  # the board page (here or in a new tab).
+  attr(:open, :atom, required: true)
+  attr(:href, :string, required: true)
+  attr(:board, :map, required: true)
+  attr(:myself, :any, required: true)
+  attr(:class, :string, default: nil)
+  attr(:rest, :global)
+  slot(:inner_block, required: true)
+
+  defp tile_link(%{open: :overlay} = assigns) do
+    ~H"""
+    <button
+      type="button"
+      phx-click="open_board"
+      phx-value-id={@board.uuid}
+      phx-target={@myself}
+      class={@class}
+      {@rest}
+    >
+      {render_slot(@inner_block)}
+    </button>
+    """
+  end
+
+  defp tile_link(assigns) do
+    ~H"""
     <a
       href={@href}
       target={if @open == :new_tab, do: "_blank"}
       rel={if @open == :new_tab, do: "noopener"}
-      class="min-w-0 flex-1 truncate text-sm font-medium hover:underline"
-      title={@board.name}
+      class={@class}
+      {@rest}
     >
-      {@board.name}
+      {render_slot(@inner_block)}
     </a>
     """
   end

@@ -25,7 +25,7 @@ defmodule PhoenixKitBoards.Web.Components do
   attr(:paste, :boolean, default: true)
   attr(:script_nonce, :string, default: nil)
   attr(:limit, :integer, default: 11)
-  attr(:open, :atom, default: :navigate, values: [:navigate, :new_tab])
+  attr(:open, :atom, default: :overlay, values: [:overlay, :navigate, :new_tab])
   attr(:return_to, :string, default: nil)
   attr(:poll, :integer, default: 5_000)
   attr(:class, :string, default: nil)

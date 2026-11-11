@@ -41,6 +41,12 @@ defmodule PhoenixKitBoards.PathsTest do
     end
   end
 
+  describe "embedded_board/1" do
+    test "the user board page in its embedded form" do
+      assert Paths.embedded_board("abc") =~ ~r{/dashboard/boards/abc\?embed=1$}
+    end
+  end
+
   describe "user_board/2" do
     test "links to the dashboard board page" do
       assert Paths.user_board("abc") =~ "/dashboard/boards/abc"

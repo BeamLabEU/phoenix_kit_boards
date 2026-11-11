@@ -95,7 +95,21 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
   @impl true
-  def mount(%{"id" => id} = params, _session, socket) do
+  def mount(%{"id" => _} = params, session, socket) do
+    # `?embed=1` on the user route: the board inside the boards widget's
+    # overlay (`BoardsPanel`, `open: :overlay`), which brings its own close
+    # button and frame. No host layout around it, no back arrow, and the page
+    # fills the frame.
+    embedded? = socket.assigns[:live_action] == :user and params["embed"] == "1"
+    socket = assign(socket, :embedded?, embedded?)
+
+    case do_mount(params, session, socket) do
+      {:ok, socket} when embedded? -> {:ok, socket, layout: false}
+      other -> other
+    end
+  end
+
+  defp do_mount(%{"id" => id} = params, _session, socket) do
     # Where the back arrow goes. Admins come from the boards list; a signed-in
     # user comes from the page that embedded the panel, which it says in
     # `return_to` — validated, since a query parameter is anyone's to write.
@@ -1369,7 +1383,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   @impl true
   def render(%{board: nil} = assigns) do
     ~H"""
-    <div class="flex items-center justify-center h-[calc(100vh-8rem)] min-h-[520px]">
+    <div class={[
+      "flex items-center justify-center",
+      if(@embedded?, do: "h-dvh", else: "h-[calc(100vh-8rem)] min-h-[520px]")
+    ]}>
       <span class="loading loading-spinner loading-lg text-base-content/40"></span>
     </div>
     """
@@ -1391,12 +1408,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       callout has to be named separately — a long press raises it through
       `user-select: none`.
     --%>
-    <div class="flex flex-col h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4 gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]">
+    <div class={[
+      "flex flex-col gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
+      if(@embedded?,
+        do: "h-dvh px-3 pt-2 pb-3",
+        else: "h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4"
+      )
+    ]}>
       <header class="flex items-center gap-3 shrink-0">
         <%!-- A plain link for the user route: it goes back to a host page in
               another live_session, which `navigate` would refuse. --%>
         <a
-          :if={@live_action == :user}
+          :if={@live_action == :user and not @embedded?}
           href={@back_to}
           class="btn btn-ghost btn-sm btn-circle"
           aria-label="Back to boards"

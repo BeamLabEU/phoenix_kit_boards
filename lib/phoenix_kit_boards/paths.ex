@@ -29,6 +29,12 @@ defmodule PhoenixKitBoards.Paths do
   end
 
   @doc """
+  The user board page in its embedded form (`?embed=1`): no host layout and no
+  back arrow, for the boards widget's overlay to frame.
+  """
+  def embedded_board(id), do: Routes.path("/dashboard/boards/#{id}") <> "?embed=1"
+
+  @doc """
   `path` when it is a path on this site, else `nil`.
 
   A `return_to` is attacker-controlled, so a back link built from it must not
