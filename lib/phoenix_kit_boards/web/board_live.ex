@@ -1458,6 +1458,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           id="board-canvas"
           canvas={@initial_canvas}
           infinite_canvas
+          pdf_export
+          export_filename={@board.name}
           theme={:inherit}
           class="w-full h-full"
         />

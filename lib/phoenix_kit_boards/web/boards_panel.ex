@@ -120,6 +120,12 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   @external_resource @paste_js
   @paste_hook File.read!(@paste_js)
 
+  # "Export as PDF" from a tile: the board is drawn off screen for the export
+  # and taken down again (see the script). Same delivery as the paste hook.
+  @export_js Path.expand("../../../priv/static/assets/boards_panel_export.js", __DIR__)
+  @external_resource @export_js
+  @export_hook File.read!(@export_js)
+
   @doc """
   Re-read the widget with the given `id` now. Call from the host LiveView, e.g.
   when it hears `{:boards_scope_changed, _}` (see the moduledoc).
@@ -287,6 +293,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:text_open?, false)
     |> assign(:created, nil)
     |> assign(:paste_text, nil)
+    |> assign(:exporting, nil)
+    |> assign(:export_seq, 0)
     |> assign(:visibility, socket.assigns.default_visibility)
     |> assign(:boards, [])
     |> assign(:total, 0)
@@ -513,6 +521,40 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       {:error, %Ecto.Changeset{}} -> {:noreply, fail(socket, "Could not delete the board.")}
       error -> {:noreply, refuse(socket, error)}
     end
+  end
+
+  # One at a time: a second click while a board is being drawn for its PDF
+  # is ignored rather than starting another copy.
+  def handle_event("export_pdf", %{"id" => _id}, %{assigns: %{exporting: %{}}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("export_pdf", %{"id" => id}, socket) do
+    with {:ok, board} <- visible_board(socket, id),
+         %{} = board <- Boards.get_board(board.uuid) do
+      seq = socket.assigns.export_seq + 1
+
+      {:noreply,
+       socket
+       |> assign(:export_seq, seq)
+       |> assign(:error, nil)
+       |> assign(:exporting, %{
+         id: board.uuid,
+         name: board.name,
+         canvas: Boards.load_canvas(board),
+         fresco_id: "#{socket.assigns.id}-export-#{seq}"
+       })}
+    else
+      nil -> {:noreply, refuse(socket, {:error, :gone})}
+      error -> {:noreply, refuse(socket, error)}
+    end
+  end
+
+  def handle_event("export_done", params, socket) do
+    socket = assign(socket, :exporting, nil)
+
+    if params["ok"] == true,
+      do: {:noreply, socket},
+      else: {:noreply, fail(socket, "Could not export the board as a PDF.")}
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
@@ -779,6 +821,38 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         </span>
       </div>
 
+      <%!-- The board being exported, drawn off screen with the same canvas and
+            layer as the board page (see `boards_panel_export.js`). Not
+            `visibility: hidden`: the export reads each shape's computed
+            style, and hidden would be what it read. --%>
+      <script :if={@exporting} data-phx-runtime-hook="BoardsPanelExport" nonce={@script_nonce}>
+        <%= Phoenix.HTML.raw("window.phx_hook_BoardsPanelExport = function () { return " <> export_hook() <> "; };") %>
+      </script>
+      <div
+        :if={@exporting}
+        id={"#{@exporting.fresco_id}-host"}
+        phx-hook="BoardsPanelExport"
+        phx-update="ignore"
+        data-fresco-id={@exporting.fresco_id}
+        data-filename={@exporting.name}
+        aria-hidden="true"
+        inert
+        style="position: fixed; left: -20000px; top: 0; width: 1600px; height: 1000px; pointer-events: none; overflow: hidden;"
+      >
+        <Fresco.canvas
+          id={@exporting.fresco_id}
+          canvas={@exporting.canvas}
+          infinite_canvas
+          nav_buttons={[]}
+          class="w-full h-full"
+        />
+        <Etcher.layer fresco_id={@exporting.fresco_id} nav_buttons={[]} />
+      </div>
+      <div :if={@exporting} role="status" class="flex items-center gap-2 text-sm text-base-content/70">
+        <span class="loading loading-spinner loading-xs"></span>
+        Exporting “{@exporting.name}” as a PDF…
+      </div>
+
       <div :if={@error} role="alert" class="alert alert-error py-2 text-sm">
         <span>{@error}</span>
         <button
@@ -827,6 +901,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   end
 
   defp paste_hook, do: @paste_hook
+  defp export_hook, do: @export_hook
 
   # ── The new-board tile ─────────────────────────────────────────────────
 
@@ -1134,6 +1209,17 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             phx-target={@myself}
           >
             <.icon name="hero-user-group" class="h-4 w-4" /> Share with everyone here
+          </button>
+        </li>
+        <li>
+          <button
+            type="button"
+            phx-click="export_pdf"
+            phx-value-id={@board.uuid}
+            phx-target={@myself}
+            disabled={not is_nil(@exporting)}
+          >
+            <.icon name="hero-document-arrow-down" class="h-4 w-4" /> Export as PDF
           </button>
         </li>
         <li :if={@creator?}>
