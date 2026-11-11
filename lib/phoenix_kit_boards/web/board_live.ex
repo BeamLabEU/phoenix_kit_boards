@@ -1460,10 +1460,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           infinite_canvas
           pdf_export
           export_filename={@board.name}
+          nav_layout={:row}
+          nav_style={:bar}
+          nav_reverse
           theme={:inherit}
           class="w-full h-full"
         />
-        <Etcher.layer fresco_id="board-canvas" toolbar tools={@tools} />
+        <%!-- The viewer's buttons, Etcher's View | Annotate switch (`:modes`,
+              in place of the pencil) and its tool bar in one dark look — the
+              same as phoenix_kit's media viewer. No eye: on a board the shapes
+              are the board, there is nothing under them to look at. --%>
+        <Etcher.layer fresco_id="board-canvas" toolbar tools={@tools} nav_buttons={[:modes]} />
         <div
           id="board-cursors"
           phx-hook="BoardCursors"
