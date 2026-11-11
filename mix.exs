@@ -125,8 +125,18 @@ defmodule PhoenixKitBoards.MixProject do
       # stroke, a text box worked on while it is typed into, live size
       # samples beside the panel's thickness and size controls, and the
       # caret placed where a double-click lands.
-      pk_dep(:fresco, ">= 0.15.0 and < 1.0.0"),
-      pk_dep(:etcher, "~> 0.23"),
+      #
+      # fresco 0.16 and etcher 0.25 are the floors now. The board page passes
+      # fresco's `pdf_export`, `nav_style: :bar`, `nav_reverse` and
+      # `actual_size`, and the widget's "Export as PDF" calls
+      # `handle.exportPdf`; the shapes reach the PDF through fresco's export
+      # layers, which etcher 0.25 fills, and the widget waits on
+      # `Etcher.layerFor(id).isReady()` (0.25). The page also asks etcher for
+      # `nav_buttons: [:modes]`, the View | Annotate switch. On older ones the
+      # host's compile warns about the attributes and the export comes out
+      # without the drawing.
+      pk_dep(:fresco, ">= 0.16.0 and < 1.0.0"),
+      pk_dep(:etcher, "~> 0.25"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). Cards are emitted as SVG and rasterized
