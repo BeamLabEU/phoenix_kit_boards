@@ -205,6 +205,33 @@ const rect = (uuid, x) => ({
   assert.deepStrictEqual(kinds(layer), ["patch", "patch"], "nothing rebuilt, nothing reordered");
 }
 
+// ── deletes go last ─────────────────────────────────────────────────────────
+//
+// Etcher's deleteShape reports the whole board to the server on the spot, and
+// the server stores it. Deleting first reported the OLD version of every shape
+// the same delta updates, and patching reports nothing to correct it — so a
+// peer's edit that deleted one shape and changed another came back reverted.
+{
+  const layer = makeLayer([rect("a", 0), rect("b", 5), rect("c", 9)]);
+  const reported = [];
+  const deleteShape = layer.deleteShape;
+  layer.deleteShape = (uuid) => {
+    deleteShape(uuid);
+    reported.push(Array.from(layer.shapes.values()).map((s) => [s.uuid, s.geometry.x]));
+  };
+
+  hookFor(layer).apply({
+    created: [rect("d", 1)],
+    updated: [rect("a", 25)],
+    deleted: ["b"],
+    order: ["a", "c", "d"]
+  });
+
+  assert.deepStrictEqual(kinds(layer), ["patch", "add", "order", "delete"]);
+  assert.deepStrictEqual(reported, [[["a", 25], ["c", 9], ["d", 1]]],
+    "what a delete reports is the finished board");
+}
+
 // ── nothing to apply to ─────────────────────────────────────────────────────
 
 {

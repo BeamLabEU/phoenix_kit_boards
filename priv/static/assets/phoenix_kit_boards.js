@@ -307,8 +307,98 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       this.pushEvent("board:ready", {});
     },
 
+    // The line dropped. What the board looked like at that moment is the
+    // base the offline work is measured against when it comes back. Taken
+    // once — a second drop before the rejoin must not move the base past
+    // edits the server has still not seen.
+    disconnected() {
+      if (!this.offlineBase) this.offlineBase = this.snapshotShapes();
+    },
+
+    // A reconnect is a NEW LiveView process, mounted from the stored board,
+    // while this page still shows the board as it was when the line dropped
+    // — plus whatever was done here in between, which the server never got
+    // (a hook event pushed while disconnected is dropped, not queued).
+    //
+    // So the server is sent the whole list as it stands here, and which
+    // shapes changed since the drop. It puts those changes on top of the
+    // stored board and answers with what this page lacks. Without this the
+    // page stayed stale until its next edit — and that edit's list, being
+    // stale, wrote back the old versions of whatever peers had changed.
     reconnected() {
-      this.pushEvent("board:ready", {});
+      const base = this.offlineBase;
+      this.offlineBase = null;
+      this.pushEvent("board:ready", this.resyncPayload(base));
+    },
+
+    // The list in the form etcher's own `annotations-changed` emits, so the
+    // server compares like with like: no null style or metadata, no
+    // render-only `readonly`, and no media card still waiting for its upload
+    // (etcher leaves those out until there is something to play).
+    wireShapes() {
+      const layer = this.layer();
+      if (!layer || typeof layer.getShapes !== "function") return null;
+
+      return layer
+        .getShapes()
+        .filter((s) => !((s.kind === "audio" || s.kind === "video") &&
+          !(s.geometry && s.geometry.href)))
+        .map((s) => {
+          const entry = { uuid: s.uuid, kind: s.kind, geometry: s.geometry };
+          if (typeof s.image_id === "string") entry.image_id = s.image_id;
+          if (s.style != null) entry.style = s.style;
+          if (s.metadata != null) entry.metadata = s.metadata;
+          return entry;
+        });
+    },
+
+    // uuid -> serialized shape. Serialized now, not later: etcher hands out
+    // its live geometry objects, and a drag mutates them in place.
+    snapshotShapes() {
+      const shapes = this.wireShapes();
+      if (!shapes) return null;
+      const out = new Map();
+      shapes.forEach((s) => out.set(s.uuid, this.stableJson(s)));
+      return out;
+    },
+
+    resyncPayload(base) {
+      const shapes = this.wireShapes();
+      // No layer to report on: nothing to reconcile, just the plain ping.
+      if (!shapes) return {};
+
+      const created = [];
+      const updated = [];
+      const seen = new Set();
+
+      // Without a base nothing counts as local work; the page is simply
+      // brought up to the stored board.
+      if (base) {
+        shapes.forEach((s) => {
+          seen.add(s.uuid);
+          if (!base.has(s.uuid)) created.push(s.uuid);
+          else if (base.get(s.uuid) !== this.stableJson(s)) updated.push(s.uuid);
+        });
+      }
+      const deleted = base ? Array.from(base.keys()).filter((uuid) => !seen.has(uuid)) : [];
+
+      return { resync: { annotations: shapes, created, updated, deleted } };
+    },
+
+    // JSON with object keys sorted, so two copies of the same shape compare
+    // equal however their keys happened to be inserted.
+    stableJson(value) {
+      if (Array.isArray(value)) {
+        return "[" + value.map((v) => this.stableJson(v)).join(",") + "]";
+      }
+      if (value && typeof value === "object") {
+        return "{" + Object.keys(value)
+          .filter((k) => value[k] !== undefined)
+          .sort()
+          .map((k) => JSON.stringify(k) + ":" + this.stableJson(value[k]))
+          .join(",") + "}";
+      }
+      return JSON.stringify(value === undefined ? null : value);
     },
 
     destroyed() {
@@ -711,7 +801,13 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       const updated = delta.updated || [];
       const created = delta.created || [];
 
-      deleted.forEach((uuid) => layer.deleteShape(uuid));
+      // Deletes go LAST. Etcher's `deleteShape` reports the whole board to
+      // the server on the spot, and the server stores whatever it is told.
+      // Deleting first sent a list still holding the OLD version of every
+      // shape this delta updates — and patching, which reports nothing,
+      // never corrected it: a peer's edit that deleted one shape and changed
+      // another came back reverted. With deletes last, the final report is
+      // the finished board.
 
       // A changed shape is patched where it stands.
       //
@@ -752,6 +848,8 @@ window.PhoenixKitBoardsHooks = window.PhoenixKitBoardsHooks || {};
       if (structural && delta.order && typeof layer.setShapeOrder === "function") {
         layer.setShapeOrder(delta.order);
       }
+
+      deleted.forEach((uuid) => layer.deleteShape(uuid));
     },
 
     // True if the shape was updated in place.

@@ -908,6 +908,27 @@ defmodule PhoenixKitBoards.Web.BoardLive do
 
   defp sync_on_ready(socket, %{"source" => "cursors"}), do: socket
 
+  # A reconnect. This process was mounted from the stored board, but the page
+  # still shows the board as it was when its line dropped, plus whatever was
+  # done there since — which never reached us, because a hook event pushed
+  # while disconnected is dropped. Diffing from `initial_canvas` would assume
+  # the page holds what we mounted with, and it does not.
+  #
+  # The page says what it holds and which shapes it changed since the drop.
+  # Those changes go on top of the stored board (a peer's delete beats an
+  # offline edit of the same shape, as it would online), and the page is sent
+  # whatever it then lacks.
+  defp sync_on_ready(socket, %{"resync" => %{"annotations" => held} = resync})
+       when is_list(held) do
+    socket
+    |> assign(:sync_ready?, true)
+    # What it listed, it has seen: from here on its silence about one of
+    # those is a delete, exactly as after any other list it sends.
+    |> acknowledge_arrivals(held)
+    |> store_offline_work(offline_delta(held, resync))
+    |> catch_up_page(held)
+  end
+
   defp sync_on_ready(%{assigns: %{sync_ready?: false} = assigns} = socket, _params) do
     # Changes can arrive while the runtime hook bundle is still loading. The
     # browser starts from initial_canvas, so catch it up once BoardSync listens.
@@ -922,6 +943,65 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   defp sync_on_ready(socket, _params), do: socket
+
+  # The page's offline changes as a delta over the stored board. Only the
+  # shapes it NAMES as changed are taken from its list — everything else in
+  # that list is a stale copy, and taking it would undo what peers did while
+  # it was away. `reordered: false` places new shapes by their neighbours
+  # without imposing the page's stale layering on everyone else.
+  defp offline_delta(held, resync) do
+    ids = fn key ->
+      resync |> Map.get(key) |> List.wrap() |> Enum.filter(&is_binary/1) |> MapSet.new()
+    end
+
+    pick = fn set ->
+      Enum.filter(held, &(is_map(&1) and MapSet.member?(set, &1["uuid"])))
+    end
+
+    %{
+      "created" => pick.(ids.("created")),
+      "updated" => pick.(ids.("updated")),
+      "deleted" => MapSet.to_list(ids.("deleted")),
+      "order" => uuid_order(held),
+      "reordered" => false
+    }
+  end
+
+  defp store_offline_work(socket, local) do
+    stored = socket.assigns.annotations
+
+    {rebased, _hoisted} =
+      stored
+      |> Boards.apply_delta(local)
+      |> hoist_embedded_images(socket.assigns.board, socket)
+
+    if empty_delta?(diff(stored, rebased)) do
+      socket
+    else
+      case Boards.apply_edit(socket.assigns.board, stored, rebased) do
+        {:ok, canvas, board, merged, delta} ->
+          broadcast(socket.assigns.topic, {:board_delta, delta, self()})
+
+          socket
+          |> assign(:board, board)
+          |> assign(:canvas, canvas)
+          |> assign(:annotations, merged)
+
+        {:error, _reason} ->
+          put_flash(socket, :error, "Could not save the board.")
+      end
+    end
+  end
+
+  defp catch_up_page(socket, held) do
+    delta = diff(held, socket.assigns.annotations)
+
+    if empty_delta?(delta) do
+      socket
+    else
+      socket |> note_peer_arrivals(delta["created"]) |> push_event("board:apply", delta)
+    end
+  end
 
   # Arrives from a browser, so it can be anything. Bounded and constrained to
   # the shape a tool key has — it is relayed to every peer and ends up in a

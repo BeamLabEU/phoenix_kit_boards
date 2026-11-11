@@ -180,6 +180,78 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     refute_push_event(lv, "board:apply", %{"created" => [^peer]})
   end
 
+  # A reconnect mounts a NEW process from the stored board, while the page still
+  # holds the board from before its line dropped plus work done offline.
+  test "a reconnecting page keeps its offline work and catches up on peers'", ctx do
+    [note] = Boards.annotations(Boards.load_canvas(ctx.board))
+    x = Quick.note_shape("Peer deletes, page edits")
+    y = Quick.note_shape("Page deletes")
+    {:ok, _, _, _, _} = Boards.apply_edit(ctx.board, [note], [note, x, y])
+
+    # While the page is away: a peer retitles the note, deletes x, adds p.
+    peer_note = put_in(note, ["metadata", "title"], "Peer title")
+    p = Quick.note_shape("Peer added")
+    {:ok, _, _, _, _} = Boards.apply_edit(ctx.board, [note, x, y], [peer_note, y, p])
+
+    # Meanwhile, offline, the page edited x, deleted y and added m.
+    local_x = put_in(x, ["metadata", "title"], "Edited offline")
+    m = Quick.note_shape("Made offline")
+    held = [note, local_x, m]
+
+    PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{ctx.board.uuid}")
+    {:ok, lv, _} = open(ctx.board, ctx.owner)
+
+    render_hook(lv, "board:ready", %{
+      "resync" => %{
+        "annotations" => held,
+        "created" => [m["uuid"]],
+        "updated" => [x["uuid"]],
+        "deleted" => [y["uuid"]]
+      }
+    })
+
+    # The offline work is stored on top of the peers' — the peer's delete of x
+    # beats the offline edit of it, as it would have online.
+    stored = ctx.board.uuid |> Boards.get_board() |> Boards.load_canvas() |> Boards.annotations()
+    assert stored == [peer_note, p, m]
+    assert_receive {:board_delta, %{"created" => [^m], "deleted" => [y_uuid]}, _}
+    assert y_uuid == y["uuid"]
+
+    # And the page is told only what it lacks.
+    assert_push_event(lv, "board:apply", %{
+      "created" => [^p],
+      "updated" => [^peer_note],
+      "deleted" => [x_uuid]
+    })
+
+    assert x_uuid == x["uuid"]
+
+    # Nothing it listed comes back as a peer's protected arrival: its next list,
+    # without m, is a delete of m.
+    render_hook(lv, "etcher:annotations-changed", %{"annotations" => [peer_note, p]})
+
+    assert ctx.board.uuid |> Boards.get_board() |> Boards.load_canvas() |> Boards.annotations() ==
+             [peer_note, p]
+  end
+
+  test "a reconnect with no offline work only brings the page up to date", ctx do
+    [note] = Boards.annotations(Boards.load_canvas(ctx.board))
+    p = Quick.note_shape("Peer added")
+    {:ok, _, _, _, _} = Boards.apply_edit(ctx.board, [note], [note, p])
+    PhoenixKit.PubSubHelper.subscribe("phoenix_kit_boards:#{ctx.board.uuid}")
+    {:ok, lv, _} = open(ctx.board, ctx.owner)
+
+    render_hook(lv, "board:ready", %{
+      "resync" => %{"annotations" => [note], "created" => [], "updated" => [], "deleted" => []}
+    })
+
+    assert_push_event(lv, "board:apply", %{"created" => [^p], "updated" => [], "deleted" => []})
+    refute_receive {:board_delta, _, _}, 100
+
+    assert ctx.board.uuid |> Boards.get_board() |> Boards.load_canvas() |> Boards.annotations() ==
+             [note, p]
+  end
+
   describe "cursor:move over the LiveView fallback" do
     setup ctx do
       {:ok, lv, _} = open(ctx.board, ctx.owner)

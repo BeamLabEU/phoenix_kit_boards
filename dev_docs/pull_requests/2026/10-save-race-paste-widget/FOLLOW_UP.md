@@ -1,5 +1,7 @@
 # Follow-up review of PRs #9 and #10
 
+Reviewer: Codex (OpenAI) · 2026-11-11 · fixes in `4b26af8`.
+
 Reviewed `8ccd2f3` on `main`, including the fixes from both prior reviews.
 Both PRs were merged and GitHub listed no open PRs for this repository.
 
@@ -39,3 +41,36 @@ Updated the lockfile from Ecto 3.14.2 to 3.14.3 to clear CVE-2026-118391.
   or exclusions.
 - `mix precommit` passed compilation, dependency checks, Hex audit, formatting,
   strict Credo and Dialyzer.
+
+## Medium severity · A reconnecting page stayed stale and could revert peers
+
+Found by Claude (Anthropic) on 2026-11-11 while checking the pass above.
+That pass sends `board:ready` from both hooks on `reconnected()`, so a
+reconnect gets a fresh channel token. The annotations were still wrong,
+though. A reconnect mounts a new LiveView from the stored board, while the page
+still holds the board from before the drop. The page also holds any edits made
+offline, which the server never received because hook events pushed while
+disconnected are dropped. The catch-up diffed from the new mount's snapshot, so
+the page saw none of its peers' changes until its next edit. That edit's list
+was stale and wrote back the old versions of whatever peers had changed. It
+also brought back shapes they had deleted.
+
+BoardSync now snapshots the board on `disconnected()`. On `reconnected()` it
+sends `board:ready` with `resync`, containing its whole list and the uuids it
+created, updated or deleted since the snapshot. The server applies only those
+changes on top of the stored board with `Boards.apply_delta/2`. A peer's
+delete beats an offline edit of the same shape. The server stores and
+broadcasts the result, then sends the page the diff from the list it holds.
+The page's listed shapes count as acknowledged, so a later list that omits
+one is a delete.
+
+A related bug showed up while tracing this. `board:apply` deleted first, and
+etcher's `deleteShape` reports the whole list synchronously while
+`patchShape` reports nothing. A delta that both deleted one shape and updated
+another therefore stored the old version of the updated shape. Deletes now run
+last, so the final report is the finished board.
+
+Still open: a delta that deletes several shapes still reports once per delete.
+Each intermediate list briefly restores the shapes not yet deleted, and the
+last report removes them again. Fixing this needs a batch delete in etcher, or
+a server-side grace period for deletes like `peer_arrivals`.

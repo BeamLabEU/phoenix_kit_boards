@@ -205,7 +205,22 @@ each viewer's own pan and zoom.
 
 Mount-time `push_event`s (channel token, stored prefs) wait for `board:ready`
 from the hooks — under runtime-hook delivery they otherwise dispatch before
-anyone is listening.
+anyone is listening. Annotation changes that arrive before BoardSync's ready
+are held and sent as one delta on it.
+
+**A reconnect is a new process facing an old page.** The new LiveView mounts
+from the stored board while the page still shows the board from before the
+drop, plus offline edits the server never got (hook events pushed while
+disconnected are dropped). So BoardSync snapshots the board on
+`disconnected()` and, on `reconnected()`, sends `board:ready` with `resync`:
+its whole list and the uuids it created/updated/deleted since. The server puts
+only those on top of the stored board (a peer's delete beats an offline edit),
+stores that, and pushes the page the diff from what it holds. Pinned by
+`test/js/reconnect_resync_test.js` and `board_access_lifecycle_test.exs`.
+
+**`board:apply` deletes last.** Etcher's `deleteShape` reports the whole list
+to the server synchronously and patching reports nothing, so deleting first
+stored the old version of every shape the same delta updated.
 
 **A list that omits a shape is a delete — unless the shape is brand new from a
 peer.** `peer_arrivals` records when each shape this client has not vouched for
