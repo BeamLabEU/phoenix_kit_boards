@@ -4,7 +4,9 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.7.0 - 2026-11-11
+
+Includes everything listed under 0.6.0, which was never published to Hex.
 
 ### Added
 
@@ -48,8 +50,32 @@ project adheres to [Semantic Versioning](https://semver.org/).
   saved as what it changed, applied to the stored board under a row lock, and
   peers are told that change after it is stored (and in the order it was
   stored), not the whole list before it is written.
+- **A page that reconnects catches up, and keeps what was done offline.** A
+  reconnect starts a new LiveView from the stored board while the page still
+  shows the board from before its line dropped, so it missed every peer change
+  until its next edit — and that edit wrote the peers' shapes back to their old
+  versions. The page now reports its board and what it changed since the drop;
+  those changes go on top of the stored board (a peer's delete wins over an
+  offline edit of the same shape), and the page is sent what it lacks. The
+  cursor channel is also re-established on reconnect.
+- **Applying a peer's edit no longer reverts part of it.** When one edit both
+  deleted a shape and changed another, the receiving page reported the board
+  mid-update with the old version of the changed shape, and that was stored.
+- **Someone opening a board while another person saves no longer misses that
+  save.** The page subscribes before reading the board and hands the browser
+  any change that arrived while its scripts were still loading.
+- **Edits arriving out of order no longer roll a viewer back**, and an ordinary
+  edit made from a slightly stale list keeps the stored layering.
+- **Peers are shown by display name, never by email address.** Since the user
+  route, people sharing a board are not all admins.
+- **A widget with no place lists admin-only boards to admins only**, matching
+  who may open them.
+- **Pasting is turned off when the widget loses permission to create**, and any
+  pending pasted images and caption are dropped rather than carried into the
+  next board. Pending clipboard content also no longer crosses into a widget
+  showing a different place or user.
 
-## 0.6.0 - 2026-10-30
+## 0.6.0 - 2026-10-30 (not published)
 
 Boards can now belong to a place inside a host app, be private or shared, keep
 their files in a media folder of their own, and be made from a drop-in widget.
