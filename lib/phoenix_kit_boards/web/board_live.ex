@@ -1460,12 +1460,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           infinite_canvas
           pdf_export
           export_filename={@board.name}
+          actual_size
           nav_layout={:row}
+          nav_overflow={[:fullscreen, :rotate_left, :home]}
           nav_style={:bar}
           nav_reverse
           theme={:inherit}
           class="w-full h-full"
         />
+        <%!-- `actual_size` + `nav_overflow` as on phoenix_kit's media viewer:
+              the 1:1 button, the zoom readout and slider bottom right, and
+              fullscreen / rotate left / reset behind the ⋯. --%>
         <%!-- The viewer's buttons, Etcher's View | Annotate switch (`:modes`,
               in place of the pencil) and its tool bar in one dark look — the
               same as phoenix_kit's media viewer. No eye: on a board the shapes
