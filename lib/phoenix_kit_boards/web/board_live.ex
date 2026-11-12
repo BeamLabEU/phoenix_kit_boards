@@ -168,9 +168,11 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  # The admin route is for holders of `boards.manage`, who open anything. The
-  # user route is where a board's own rules apply: private is its creator's,
-  # and the host decides the place.
+  # The admin route is for holders of `boards.manage`, who open anything; the
+  # session's scope, which core refreshes when roles change, is asked again on
+  # every event and every few seconds, as on the user route. The user route is
+  # where a board's own rules apply: private is its creator's, and the host
+  # decides the place.
   defp may_open?(board, socket) do
     case socket.assigns[:live_action] do
       :user ->
@@ -276,7 +278,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # of them.
   @max_unfurls 3
 
-  defp watch_access(%{assigns: %{live_action: :user}} = socket) do
+  defp watch_access(%{assigns: %{live_action: action}} = socket) when action in [:user, :show] do
     Process.send_after(self(), :board_access_check, @access_check_ms)
 
     socket
@@ -307,12 +309,22 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     else
       _ ->
         PubSub.unsubscribe(PubSubHelper.pubsub(), socket.assigns.topic)
-        {:ok, socket} = not_found(assign(socket, :board, nil))
-        {:error, socket}
+        {:error, leave(assign(socket, :board, nil))}
     end
   end
 
   defp refresh_access(socket), do: {:ok, socket}
+
+  # An admin page whose `boards.manage` was taken away says so; any other
+  # reason (the board is gone, private now, the host refuses) is "not found".
+  defp leave(socket) do
+    if route_allowed?(socket) do
+      {:ok, socket} = not_found(socket)
+      socket
+    else
+      refuse_admin(socket)
+    end
+  end
 
   # Boards written before images were uploaded — or while an upload was
   # failing — carry the bytes inline. Doing this at open rather than waiting

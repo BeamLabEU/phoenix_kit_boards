@@ -54,6 +54,55 @@ defmodule PhoenixKitBoards.Integration.AdminPagesTest do
     end
   end
 
+  # Core rebuilds the scope in the page's assigns when roles change; the page
+  # asks it again, so an open page does not outlive the key.
+  describe "boards.manage taken away from an open page" do
+    defp refresh_scope(lv, user),
+      do: send(lv.pid, {:phoenix_kit_scope_roles_updated, user.uuid})
+
+    test "the list stops answering events" do
+      admin = board_admin_fixture()
+      {:ok, lv, _} = open("index", admin)
+      before = length(Boards.list_boards(include_data: false))
+
+      revoke_boards(admin, ["boards.manage"])
+      refresh_scope(lv, admin)
+
+      assert {:error, {:live_redirect, %{to: @admin_home}}} = render_hook(lv, "create", %{})
+      assert length(Boards.list_boards(include_data: false)) == before
+    end
+
+    test "the list still answers while the key is held" do
+      {:ok, lv, _} = open("index", board_admin_fixture())
+      render_hook(lv, "create", %{})
+      assert length(Boards.list_boards(include_data: false)) >= 2
+    end
+
+    test "a board page is left on the next check", %{board: board} do
+      admin = board_admin_fixture()
+      {:ok, lv, _} = open("show", admin, board)
+
+      revoke_boards(admin, ["boards.manage"])
+      refresh_scope(lv, admin)
+      send(lv.pid, :board_access_check)
+
+      assert_redirect(lv, @admin_home)
+    end
+
+    test "a board page is left on its next event, before the timer", %{board: board} do
+      admin = board_admin_fixture()
+      {:ok, lv, _} = open("show", admin, board)
+
+      revoke_boards(admin, ["boards.manage"])
+      refresh_scope(lv, admin)
+
+      assert {:error, {:live_redirect, %{to: @admin_home}}} =
+               render_hook(lv, "etcher:annotations-changed", %{"annotations" => []})
+
+      assert Boards.get_board(board.uuid).data == board.data
+    end
+  end
+
   describe "a board page" do
     test "the base key without manage is sent away, even for a board of the user's own",
          %{owner: owner, board: board} do

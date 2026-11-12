@@ -59,9 +59,9 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     %{owner: owner, other: other, board: board}
   end
 
-  defp open(board, user) do
+  defp open(board, user, extra \\ %{}) do
     live_isolated(build_conn(), BoardHostLive,
-      session: %{"user_uuid" => user.uuid, "board_uuid" => board.uuid}
+      session: Map.merge(%{"user_uuid" => user.uuid, "board_uuid" => board.uuid}, extra)
     )
   end
 
@@ -129,19 +129,23 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
 
   test "revoking the base key disconnects an existing viewer", ctx do
     {:ok, lv, _} = open(ctx.board, ctx.other)
+    revoke_boards(ctx.other)
 
-    Repo.delete_all(
-      from(rp in PhoenixKit.Users.RolePermission,
-        where:
-          rp.role_uuid in subquery(
-            from(ra in PhoenixKit.Users.RoleAssignment,
-              where: ra.user_uuid == ^ctx.other.uuid,
-              select: ra.role_uuid
-            )
-          )
-      )
-    )
+    send(lv.pid, :board_access_check)
+    assert_redirect(lv, "/projects")
+  end
 
+  # In a host the page holds the scope core built when it mounted, and core
+  # rebuilds it on `{:phoenix_kit_scope_roles_updated, _}`. The revoke reaches
+  # the viewer through that, and not before it.
+  test "with the scope snapshot a host keeps, the revoke lands when core refreshes it", ctx do
+    {:ok, lv, _} = open(ctx.board, ctx.other, %{"snapshot" => true})
+    revoke_boards(ctx.other)
+
+    send(lv.pid, :board_access_check)
+    assert render(lv) =~ "board-root"
+
+    send(lv.pid, {:phoenix_kit_scope_roles_updated, ctx.other.uuid})
     send(lv.pid, :board_access_check)
     assert_redirect(lv, "/projects")
   end

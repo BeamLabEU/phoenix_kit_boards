@@ -24,6 +24,8 @@ defmodule PhoenixKitBoards.DataCase do
     end
   end
 
+  import Ecto.Query, only: [from: 2]
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PhoenixKit.Users.{Permissions, Roles}
   alias PhoenixKitBoards.Test.Repo, as: TestRepo
@@ -76,4 +78,22 @@ defmodule PhoenixKitBoards.DataCase do
   @doc "A user holding `\"boards.manage\"`: the admin."
   def board_admin_fixture(attrs \\ %{}),
     do: attrs |> user_fixture() |> grant_boards(["boards.manage"])
+
+  @doc """
+  Takes keys away from every role `user` holds (all of them by default), as an
+  admin's permissions screen would.
+  """
+  def revoke_boards(user, keys \\ nil) do
+    roles =
+      from(ra in PhoenixKit.Users.RoleAssignment,
+        where: ra.user_uuid == ^user.uuid,
+        select: ra.role_uuid
+      )
+
+    query = from(rp in PhoenixKit.Users.RolePermission, where: rp.role_uuid in subquery(roles))
+    query = if keys, do: from(rp in query, where: rp.module_key in ^keys), else: query
+
+    TestRepo.delete_all(query)
+    user
+  end
 end

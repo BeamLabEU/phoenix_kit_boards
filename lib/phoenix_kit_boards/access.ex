@@ -37,7 +37,7 @@ defmodule PhoenixKitBoards.Access do
 
   require Logger
 
-  alias PhoenixKit.Users.Auth.Scope
+  alias PhoenixKit.Users.Auth.{Scope, User}
   alias PhoenixKitBoards.{Board, Boards}
 
   @app :phoenix_kit_boards
@@ -49,9 +49,10 @@ defmodule PhoenixKitBoards.Access do
   permission *and* the host's rule. A missing user is always refused.
 
   `phoenix_scope` is the session's `PhoenixKit.Users.Auth.Scope`; built from
-  `user` when not given.
+  `user` when not given. `user` is a `PhoenixKit.Users.Auth.User`: anything
+  else, a plain map included, holds no permission and is refused.
   """
-  @spec can?(:view | :create, map() | nil, Boards.scope(), Scope.t() | nil) :: boolean()
+  @spec can?(:view | :create, User.t() | nil, Boards.scope(), Scope.t() | nil) :: boolean()
   def can?(action, user, place, phoenix_scope \\ nil) when action in @actions do
     case user do
       %{uuid: uuid} when is_binary(uuid) ->
@@ -69,7 +70,7 @@ defmodule PhoenixKitBoards.Access do
   visible to them by the module's rule *and* the host to allow `:view` of its
   place. A board with no place is for admins only.
   """
-  @spec can_open?(Board.t(), map() | nil, Scope.t() | nil) :: boolean()
+  @spec can_open?(Board.t(), User.t() | nil, Scope.t() | nil) :: boolean()
   def can_open?(%Board{} = board, user, phoenix_scope \\ nil) do
     scope = scope_for(user, phoenix_scope)
 
@@ -95,7 +96,7 @@ defmodule PhoenixKitBoards.Access do
   `can_open?/3` opens them for admins only — a list that showed them to anyone
   else would publish their names and previews behind tiles that do not open.
   """
-  @spec can_list?(map() | nil, Boards.scope(), Scope.t() | nil) :: boolean()
+  @spec can_list?(User.t() | nil, Boards.scope(), Scope.t() | nil) :: boolean()
   def can_list?(user, place, phoenix_scope \\ nil)
 
   def can_list?(user, nil, phoenix_scope) do
@@ -119,7 +120,7 @@ defmodule PhoenixKitBoards.Access do
   # The session's scope when the caller has it, else one built from the user.
   # Only a persisted user has one: anything else holds no permission.
   defp scope_for(_user, %Scope{} = scope), do: scope
-  defp scope_for(%PhoenixKit.Users.Auth.User{} = user, _), do: Scope.for_user(user)
+  defp scope_for(%User{} = user, _), do: Scope.for_user(user)
   defp scope_for(_user, _), do: nil
 
   defp user_uuid(%{uuid: uuid}) when is_binary(uuid), do: uuid

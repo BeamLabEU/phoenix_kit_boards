@@ -44,7 +44,14 @@ defmodule PhoenixKitBoards.Test.AdminHostLive do
 
   def handle_event(event, params, socket), do: BoardLive.handle_event(event, params, socket)
 
+  # What core's scope hook does when roles change: the snapshot in the assigns
+  # is rebuilt, and the message goes no further.
   @impl true
+  def handle_info({:phoenix_kit_scope_roles_updated, _uuid}, socket) do
+    user = socket.assigns.phoenix_kit_current_user
+    {:noreply, assign(socket, :phoenix_kit_current_scope, Scope.for_user(user))}
+  end
+
   def handle_info(message, socket), do: BoardLive.handle_info(message, socket)
 
   @impl true

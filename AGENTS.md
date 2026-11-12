@@ -141,7 +141,9 @@ with a flash. `/dashboard/boards/:id` (`:user`) is the user side: `Access.can_op
 sets the `boards_manage_backfilled` setting (`"true"`, module `"boards"`). That name is a
 **contract** — a host that grants the keys in its own migration reads it. A failed
 pass leaves it unset and runs again on the next boot; a role granted `boards` later
-gets only the narrow meaning. Breaking change for hosts: users with no `boards` key
+gets only the narrow meaning. Core runs it only for an enabled module, so a site that
+enables Boards later gets the grant at that first boot, for every role holding `boards`
+then. Breaking change for hosts: users with no `boards` key
 lose the widget and the board page (they used to need nothing).
 
 ### Routes

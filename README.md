@@ -111,7 +111,9 @@ Two keys, in the admin's permissions matrix:
 On first start after an upgrade, every role that held `boards` is given
 `boards.manage`, so nobody loses the admin pages; the `boards_manage_backfilled`
 setting records that this happened (a host that grants the keys in its own
-migration can read it). **Hosts that let users with no `boards` permission see
+migration can read it). It runs only while the module is enabled, so on a site
+that turns Boards on later it is the first boot with it enabled that gives
+`boards.manage` to every role holding `boards` at that moment. **Hosts that let users with no `boards` permission see
 the widget, or open boards, now have to grant the base key** — that is the
 breaking change.
 
