@@ -90,7 +90,7 @@ moduledoc; the ones you will reach for:
 | `visibility_options` / `default_visibility` | who can see what people create here; one value hides the choice (`[:private]` = a personal notepad, `[:shared]` = a team one) |
 | `actions` | which ways to start a board to offer, from `[:empty, :text, :image]` |
 | `limit` | tiles shown before "Show all" |
-| `open` | `:navigate` or `:new_tab` |
+| `open` | `:overlay` (default: the board opens over the page, in the board page's own viewer), `:navigate` or `:new_tab` |
 | `show_label` | `false` to keep `label` for the folder name without drawing it |
 
 Boards opened from the widget open at `/dashboard/boards/:id` (so people who are not

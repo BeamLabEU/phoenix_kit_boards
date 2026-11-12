@@ -333,7 +333,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
   describe "creating" do
     test "the big + makes an empty quick board in the place and opens it", %{conn: conn, me: me} do
-      {:ok, lv, _} = mount_panel(conn, me, return_to: "/projects/panel")
+      {:ok, lv, _} = mount_panel(conn, me, return_to: "/projects/panel", open: :navigate)
       lv |> element("button[phx-click=create_empty]") |> render_click()
 
       [board] = Boards.list_for_scope(@scope, me.uuid)
@@ -986,6 +986,120 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
   # One match per board row (names also turn up in aria-labels).
   defp rows(html), do: Regex.scan(~r/<li id="panel-[0-9a-f-]{36}"/, html)
+
+  describe "open: :overlay (the default)" do
+    test "a tile opens its board over the page, in the board page's own viewer", %{
+      conn: conn,
+      me: me
+    } do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, html} = mount_panel(conn, me)
+
+      # Buttons, not links: the page stays where it is.
+      assert html =~ ~s(phx-click="open_board")
+      refute html =~ ~s(href="#{PhoenixKitBoards.Paths.user_board(board.uuid)})
+
+      html = fire(lv, "open_board", %{"id" => board.uuid})
+      assert html =~ ~s(role="dialog")
+      assert html =~ ~s(src="#{PhoenixKitBoards.Paths.embedded_board(board.uuid)}")
+      assert html =~ "Q3 plan"
+      assert has_element?(lv, ~s([aria-label="Open in a new tab"]))
+
+      html = fire(lv, "close_board", %{})
+      refute html =~ ~s(role="dialog")
+      refute html =~ "embed=1"
+    end
+
+    test "the big + opens the new board in the overlay, not on another page", %{
+      conn: conn,
+      me: me
+    } do
+      {:ok, lv, _} = mount_panel(conn, me)
+      html = lv |> element("button[phx-click=create_empty]") |> render_click()
+
+      [board] = Boards.list_for_scope(@scope, me.uuid)
+      assert html =~ ~s(src="#{PhoenixKitBoards.Paths.embedded_board(board.uuid)}")
+    end
+
+    test "someone else's private board, or another place's, does not open", %{
+      conn: conn,
+      me: me,
+      other: other
+    } do
+      private = board!(other, "Their secret", %{"visibility" => "private"})
+      elsewhere = board!(me, "Elsewhere", %{"scope_id" => "other-place"})
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      for board <- [private, elsewhere] do
+        html = fire(lv, "open_board", %{"id" => board.uuid})
+        refute html =~ "embed=1"
+        refute html =~ board.name
+      end
+    end
+
+    test "an unknown open mode falls back to the overlay", %{conn: conn, me: me} do
+      board!(me, "Q3 plan")
+      {:ok, _lv, html} = mount_panel(conn, me, open: :sideways)
+      assert html =~ ~s(phx-click="open_board")
+    end
+  end
+
+  describe "export as PDF" do
+    test "every tile offers it", %{conn: conn, me: me} do
+      board!(me, "Q3 plan")
+      {:ok, _lv, html} = mount_panel(conn, me)
+      assert html =~ "Export as PDF"
+    end
+
+    test "the board is drawn off screen for the export, then taken down", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      html = fire(lv, "export_pdf", %{"id" => board.uuid})
+      assert html =~ ~s(phx-hook="BoardsPanelExport")
+      assert html =~ ~s(data-filename="Q3 plan")
+      assert html =~ ~s(data-phx-runtime-hook="BoardsPanelExport")
+      assert html =~ "Exporting “Q3 plan” as a PDF"
+      assert has_element?(lv, "[phx-hook=BoardsPanelExport] [data-fresco-id]")
+
+      # A second click while one is running starts nothing new.
+      assert fire(lv, "export_pdf", %{"id" => board.uuid}) =~ "panel-export-1-host"
+      refute render(lv) =~ "panel-export-2"
+
+      html = fire(lv, "export_done", %{"ok" => true})
+      refute html =~ ~s(phx-hook="BoardsPanelExport")
+      refute html =~ "Exporting"
+      refute html =~ "Could not export"
+    end
+
+    test "a failed export says so", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      fire(lv, "export_pdf", %{"id" => board.uuid})
+      html = fire(lv, "export_done", %{"ok" => false, "reason" => "timeout"})
+      assert html =~ "Could not export the board as a PDF."
+      refute html =~ ~s(phx-hook="BoardsPanelExport")
+    end
+
+    test "someone else's private board, or another place's, is not drawn", %{
+      conn: conn,
+      me: me,
+      other: other
+    } do
+      private = board!(other, "Their secret", %{"visibility" => "private"})
+      elsewhere = board!(me, "Elsewhere", %{"scope_id" => "other-place"})
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      for board <- [private, elsewhere] do
+        html = fire(lv, "export_pdf", %{"id" => board.uuid})
+        refute html =~ ~s(phx-hook="BoardsPanelExport")
+        refute html =~ board.name
+      end
+
+      refute fire(lv, "export_pdf", %{"id" => Ecto.UUID.generate()}) =~ "BoardsPanelExport"
+    end
+  end
 
   defp eventually(fun, tries \\ 40) do
     cond do
