@@ -1003,6 +1003,10 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert html =~ ~s(role="dialog")
       assert html =~ ~s(src="#{PhoenixKitBoards.Paths.embedded_board(board.uuid)}")
       assert html =~ "Q3 plan"
+      # The board's laser measure (when the host turns it on) talks to the
+      # meter over Web Bluetooth, which a frame may use only when its parent
+      # allows it.
+      assert html =~ ~r/allow="[^"]*\bbluetooth\b/
       assert has_element?(lv, ~s([aria-label="Open in a new tab"]))
 
       html = fire(lv, "close_board", %{})

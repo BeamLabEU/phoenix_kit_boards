@@ -893,7 +893,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             src={@viewing.src}
             title={@viewing.name}
             class="min-h-0 w-full flex-1 border-0"
-            allow="fullscreen; clipboard-read; clipboard-write"
+            allow="fullscreen; clipboard-read; clipboard-write; bluetooth"
             allowfullscreen
           ></iframe>
         </div>
