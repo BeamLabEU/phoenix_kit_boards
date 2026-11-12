@@ -39,6 +39,10 @@ if repo_available do
   {:ok, _} = PhoenixKit.PubSub.Manager.start_link([])
   {:ok, _} = PhoenixKit.Cache.start_link(name: :settings)
 
+  # `Scope.can?/2` answers for a key only when the registry knows the module
+  # (which is also how it knows `boards.manage` belongs under `boards`).
+  {:ok, _} = PhoenixKit.ModuleRegistry.start_link([])
+
   # Cleared BEFORE core's chain runs: a leftover row with a later version
   # makes Ecto warn about every core migration that sorts before it.
   boards_version = 9_000_000_000_000_001
@@ -53,6 +57,11 @@ if repo_available do
   # its own version stamp, and a tracked `:already_up` would never pick up a
   # newer version of the chain. The version sorts after core's timestamps.
   Ecto.Migrator.up(TestRepo, boards_version, PhoenixKitBoards.Test.MigrateBoards, log: false)
+
+  # `Scope.can?/2` also asks whether the module is enabled, so every
+  # permission test would fail closed without this. A setting of the test
+  # database, written once, outside any sandbox.
+  {:ok, _} = PhoenixKitBoards.enable_system()
 
   {:ok, _} = PhoenixKitBoards.Test.Endpoint.start_link()
 

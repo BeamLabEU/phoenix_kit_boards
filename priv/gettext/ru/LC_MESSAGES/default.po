@@ -1,0 +1,27 @@
+## "msgid"s in this file come from POT (.pot) files.
+###
+### Do not add, change, or remove "msgid"s manually here as
+### they're tied to the ones in the corresponding POT file
+### (with the same domain).
+###
+### Use "mix gettext.extract --merge" or "mix gettext.merge"
+### to merge POT files into PO files.
+msgid ""
+msgstr ""
+"Language: ru\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100 != 11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10||n%100>=20) ? 1 : 2);\n"
+
+#: lib/phoenix_kit_boards.ex:188
+#, elixir-autogen, elixir-format
+msgid "Boards"
+msgstr "Доски"
+
+#: lib/phoenix_kit_boards.ex:189
+#, elixir-autogen, elixir-format
+msgid "Manage boards"
+msgstr "Управление досками"
+
+#: lib/phoenix_kit_boards.ex:190
+#, elixir-autogen, elixir-format
+msgid "Open the boards admin pages and every board, in any place, whoever made it"
+msgstr "Админские страницы досок и любые доски в любом месте, кто бы их ни создал"

@@ -93,8 +93,27 @@ moduledoc; the ones you will reach for:
 | `open` | `:overlay` (default: the board opens over the page, in the board page's own viewer), `:navigate` or `:new_tab` |
 | `show_label` | `false` to keep `label` for the folder name without drawing it |
 
-Boards opened from the widget open at `/dashboard/boards/:id` (so people who are not
-admins can open them) and link back to `return_to`.
+Boards opened from the widget open at `/dashboard/boards/:id` (so people without
+`boards.manage` can open them) and link back to `return_to`.
+
+### Permissions
+
+Two keys, in the admin's permissions matrix:
+
+- **`boards`** — the user's. The widget and `/dashboard/boards/:id`, in the
+  places your `:authorize` hook (below) lets them into. Without it the widget
+  renders nothing and the hook is not even asked.
+- **`boards.manage`** — the admin's. `/admin/boards` and `/admin/boards/:id`, and
+  every board in every place, private ones included, with no hook asked. Without
+  it those two pages send the user to the admin home. (PhoenixKit cannot tie a
+  module's own routes to a sub-key, so the pages check it themselves.)
+
+On first start after an upgrade, every role that held `boards` is given
+`boards.manage`, so nobody loses the admin pages; the `boards_manage_backfilled`
+setting records that this happened (a host that grants the keys in its own
+migration can read it). **Hosts that let users with no `boards` permission see
+the widget, or open boards, now have to grant the base key** — that is the
+breaking change.
 
 ### Who may see a place
 
@@ -108,13 +127,13 @@ def can?(action, user, {"project", id}) when action in [:view, :create],
   do: MyApp.Projects.member?(id, user)
 ```
 
-With no hook any signed-in user may view and create. A hook that raises, exits or
-answers anything but a boolean **denies**. The hook can narrow access, never
-widen it: **private is always its creator's** (users holding the `boards` admin
-permission may still open any board, as they always could on `/admin/boards`).
+With no hook any signed-in user holding `boards` may view and create. A hook that
+raises, exits or answers anything but a boolean **denies**. The hook can narrow
+access, never widen it: **private is always its creator's** (users holding
+`boards.manage` may still open any board, as they always could on `/admin/boards`).
 The panel renders nothing for a place the user may not view. Boards with no
 place (`scope={nil}`) are the admin list's own, so a panel for them shows only
-to those admins.
+to holders of `boards.manage`.
 
 ### Where a board's files go
 

@@ -27,7 +27,7 @@ defmodule PhoenixKitBoards.MixProject do
     # `:phoenix_kit` in extra_applications is REQUIRED for ModuleDiscovery to
     # find this module's `.beam` at host startup.
     [
-      extra_applications: [:logger, :phoenix_kit]
+      extra_applications: [:logger, :gettext, :phoenix_kit]
     ]
   end
 
@@ -81,6 +81,9 @@ defmodule PhoenixKitBoards.MixProject do
       # the suite runs against 3.0.0.
       pk_dep(:phoenix_kit, ">= 2.64.1 and < 4.0.0"),
       {:phoenix_live_view, "~> 1.1"},
+      # The label and description of `boards.manage` in the admin permissions
+      # matrix are translated through this module's own backend.
+      {:gettext, "~> 1.0"},
 
       # The infinite-canvas engine + annotation layer. The host already loads
       # their JS + hooks (the media annotation feature), so these constraints

@@ -39,8 +39,8 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
   end
 
   setup do
-    owner = user_fixture()
-    other = user_fixture()
+    owner = board_user_fixture()
+    other = board_user_fixture()
     {:ok, board} = Quick.create_note({"project", "access"}, owner.uuid, "Original")
 
     # The test database's bucket writes under a RELATIVE path, i.e. into this
@@ -116,6 +116,42 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
     send(lv.pid, :board_access_check)
     assert_redirect(lv, "/projects")
+  end
+
+  # The base `boards` key is what lets anyone onto `/dashboard/boards/:id`;
+  # the host's hook only narrows it.
+  test "a user without the base key is told the board is not found", ctx do
+    Application.delete_env(:phoenix_kit_boards, :authorize)
+    keyless = user_fixture()
+
+    assert {:error, {:redirect, %{to: "/projects"}}} = open(ctx.board, keyless)
+  end
+
+  test "revoking the base key disconnects an existing viewer", ctx do
+    {:ok, lv, _} = open(ctx.board, ctx.other)
+
+    Repo.delete_all(
+      from(rp in PhoenixKit.Users.RolePermission,
+        where:
+          rp.role_uuid in subquery(
+            from(ra in PhoenixKit.Users.RoleAssignment,
+              where: ra.user_uuid == ^ctx.other.uuid,
+              select: ra.role_uuid
+            )
+          )
+      )
+    )
+
+    send(lv.pid, :board_access_check)
+    assert_redirect(lv, "/projects")
+  end
+
+  test "a holder of the admin key opens a board the host refuses", ctx do
+    Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
+    admin = board_admin_fixture()
+
+    {:ok, _lv, html} = open(ctx.board, admin)
+    assert html =~ "board-root"
   end
 
   test "deleting a board disconnects its existing viewers", ctx do

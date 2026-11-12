@@ -5,14 +5,24 @@ defmodule PhoenixKitBoards.Web.IndexLive do
   """
   use PhoenixKitWeb, :live_view
 
-  alias PhoenixKitBoards.{Boards, Paths}
+  alias PhoenixKitBoards.{Access, Boards, Paths}
 
+  # Core cannot tie this route to `boards.manage` (a `route_module/0` route has
+  # no permission of its own, and the router only checks the base key), so the
+  # page asks itself.
   @impl true
   def mount(_params, _session, socket) do
-    {:ok,
-     socket
-     |> assign(:page_title, "Boards")
-     |> assign(:boards, if(connected?(socket), do: list(), else: []))}
+    if Access.admin?(socket.assigns[:phoenix_kit_current_scope]) do
+      {:ok,
+       socket
+       |> assign(:page_title, "Boards")
+       |> assign(:boards, if(connected?(socket), do: list(), else: []))}
+    else
+      {:ok,
+       socket
+       |> put_flash(:error, "You do not have access to the boards admin.")
+       |> push_navigate(to: Paths.admin())}
+    end
   end
 
   @impl true

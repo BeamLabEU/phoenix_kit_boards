@@ -26,7 +26,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       File.rm_rf(root)
     end)
 
-    %{conn: build_conn(), me: user_fixture(), other: user_fixture()}
+    %{conn: build_conn(), me: board_user_fixture(), other: board_user_fixture()}
   end
 
   defp mount_panel(conn, user, opts \\ []) do
@@ -44,9 +44,29 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
     end
   end
 
+  # Reports to the test through the application env, not the process
+  # dictionary: the panel's events are handled in the LiveView's process.
+  defmodule Recorder do
+    def can?(action, _user, scope), do: ask(action, scope, true)
+    def deny(action, _user, scope), do: ask(action, scope, false)
+
+    defp ask(action, scope, answer) do
+      if pid = Application.get_env(:phoenix_kit_boards, :recorder_pid),
+        do: send(pid, {:asked, action, scope})
+
+      answer
+    end
+  end
+
   defmodule ViewOnly do
     def can?(:view, _user, _scope), do: true
     def can?(:create, _user, _scope), do: false
+  end
+
+  defp record_asks(hook) do
+    Application.put_env(:phoenix_kit_boards, :recorder_pid, self())
+    Application.put_env(:phoenix_kit_boards, :authorize, hook)
+    on_exit(fn -> Application.delete_env(:phoenix_kit_boards, :recorder_pid) end)
   end
 
   defp board!(user, name, attrs \\ %{}) do
@@ -328,6 +348,59 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       html = fire(lv, "create_empty", %{})
       assert html =~ "cannot add boards"
       assert Boards.count_for_scope(@scope, me.uuid) == 1
+    end
+  end
+
+  describe "the permission keys" do
+    test "a user without the base key sees nothing, and the host is never asked",
+         %{conn: conn, me: me} do
+      board!(me, "Keyless secret")
+      keyless = user_fixture()
+      record_asks({Recorder, :can?})
+
+      {:ok, lv, html} = mount_panel(conn, keyless)
+      refute html =~ "Keyless secret"
+      refute html =~ "Panel Co"
+      refute html =~ "panel-new"
+
+      # A forged event is refused too.
+      fire(lv, "create_empty", %{})
+      fire(lv, "quick_note", %{"note" => "Not allowed"})
+      assert Boards.count_for_scope(@scope, me.uuid) == 1
+      refute_received {:asked, _, _}
+    end
+
+    test "losing the base key closes a panel that is already open", %{conn: conn, me: me} do
+      board!(me, "Revoked key")
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      Repo.delete_all(PhoenixKit.Users.RolePermission)
+      BoardsPanel.refresh("panel", lv.pid)
+
+      html = render(lv)
+      refute html =~ "Revoked key"
+      refute html =~ "panel-new"
+    end
+
+    test "boards.manage sees and adds in a place the host refuses, with no hook asked",
+         %{conn: conn, me: me} do
+      board!(me, "Managed place")
+      admin = board_admin_fixture()
+      record_asks({Recorder, :deny})
+
+      {:ok, lv, html} = mount_panel(conn, admin, open: :new_tab)
+      assert html =~ "Managed place"
+      assert html =~ "panel-new"
+
+      fire(lv, "create_empty", %{})
+      assert Boards.count_for_scope(@scope, me.uuid) == 2
+      refute_received {:asked, _, _}
+    end
+
+    test "boards.manage sees the boards that belong to no place", %{conn: conn, me: me} do
+      {:ok, _} = Boards.create_board(%{"name" => "Global plan", "created_by" => me.uuid})
+      {:ok, _lv, html} = mount_panel(conn, board_admin_fixture(), scope: nil)
+      assert html =~ "Global plan"
     end
   end
 

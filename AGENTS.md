@@ -43,6 +43,8 @@ or router of its own.
 
 - `phoenix_kit` (`~> 2.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
+- `gettext` (`~> 1.0`) — `PhoenixKitBoards.Gettext`, the backend that translates the
+  permission labels in the admin matrix
 - `fresco` (`>= 0.13.1 and < 1.0.0`) — the infinite-canvas engine and `Fresco.Canvas` document
 - `etcher` (`~> 0.18`) — the annotation/drawing layer over the canvas
 - `req` (`~> 0.5`) — fetches the page behind a pasted link
@@ -91,11 +93,16 @@ Implemented via `pk_dep/3` in `mix.exs` — never hand-edit a path dep in.
   belongs to a place (`scope_type` + `scope_id`, both or neither), is `private`
   (creator only) or `shared`, and is `canvas` or `quick` (made by quick capture).
 - **`PhoenixKitBoards.Access`** (`access.ex`) — who may open a board / act in a
-  place. The module's rule (private is the creator's) plus the host's
-  `:authorize` hook, which **fails closed**; admins with the `boards` permission
-  open anything. A board with no place opens for those admins only, and lists
-  ask `can_list?/2`, which applies the same rule — a list must not show what the
-  board page will not open.
+  place. Two permission keys: the base **`boards`** is the user's and
+  **`boards.manage`** the admin's. A holder of `boards.manage` (`admin?/1`) opens
+  anything and is never run past the hook. Anyone else needs the base key
+  (`Scope.can?/2`, which includes `boards_enabled`) **and** the module's rule
+  (private is the creator's) **and** the host's `:authorize` hook, which **fails
+  closed**; without the base key the hook is not asked. The session's `Scope` is
+  an optional last argument and is built from the user (`Scope.for_user/1`) when
+  not given, so a plain map holds nothing. A board with no place opens for
+  `boards.manage` only, and lists ask `can_list?/3`, which applies the same rule —
+  a list must not show what the board page will not open.
 - **`PhoenixKitBoards.MediaFolders`** (`media_folders.ex`) — one media folder per
   board, on core's `ResourceFolders` convention. The *parent* is decided when the
   board is created and kept in `folder_parent_uuid` (the root is stored as the
@@ -119,6 +126,23 @@ Implemented via `pk_dep/3` in `mix.exs` — never hand-edit a path dep in.
   process to PubSub from the component**: a host `handle_info` with no catch-all
   would crash. It deliberately does not manage places/projects — the host chooses
   `scope`.
+
+### Permissions
+
+`permission_metadata/0` declares `sub_permissions: [manage]`; the labels go through
+`PhoenixKitBoards.Gettext` (pinned by `translatable_labels/0`, the way
+`phoenix_kit_dashboards` does it). The `/admin/boards` tab is
+`permission: "boards.manage"`, but core cannot tie a `route_module/0` route to a
+sub-key (the router checks the base key only), so `Web.IndexLive` and `Web.BoardLive`
+on the `:show` action ask `Access.admin?/1` themselves and redirect to the admin home
+with a flash. `/dashboard/boards/:id` (`:user`) is the user side: `Access.can_open?/3`.
+
+`migrate_legacy/0` grants `boards.manage` once to every role holding `boards`, then
+sets the `boards_manage_backfilled` setting (`"true"`, module `"boards"`). That name is a
+**contract** — a host that grants the keys in its own migration reads it. A failed
+pass leaves it unset and runs again on the next boot; a role granted `boards` later
+gets only the narrow meaning. Breaking change for hosts: users with no `boards` key
+lose the widget and the board page (they used to need nothing).
 
 ### Routes
 

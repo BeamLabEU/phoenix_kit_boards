@@ -40,9 +40,13 @@ defmodule PhoenixKitBoards do
   """
 
   use PhoenixKit.Module
+  use Gettext, backend: PhoenixKitBoards.Gettext
+
+  require Logger
 
   alias PhoenixKit.Dashboard.Tab
   alias PhoenixKit.Settings
+  alias PhoenixKit.Users.Permissions
 
   # ── Required callbacks ─────────────────────────────────────────────────
 
@@ -80,8 +84,114 @@ defmodule PhoenixKitBoards do
       key: module_key(),
       label: "Boards",
       icon: "hero-rectangle-group",
-      description: "Collaborative infinite-canvas boards"
+      description: "Collaborative infinite-canvas boards",
+      # The base key is the user's: the boards widget and the board page on
+      # `/dashboard/boards/:id`, where the host's `:authorize` hook still
+      # decides which places. `boards.manage` is the admin's: `/admin/boards`,
+      # any board in any place, and no hook. `migrate_legacy/0` grants it once
+      # to every role that held `boards` before the split.
+      sub_permissions: [
+        %{
+          key: "manage",
+          label: "Manage boards",
+          description:
+            "Open the boards admin pages and every board, in any place, whoever made it"
+        }
+      ],
+      gettext_backend: PhoenixKitBoards.Gettext,
+      gettext_domain: "default"
     }
+  end
+
+  @manage_backfill_key "boards_manage_backfilled"
+
+  @doc """
+  One-time data repair core calls on every boot.
+
+  `boards.manage` is granted to every role that already holds the base
+  `boards` key, so nobody loses the admin pages when they move behind the
+  sub-key. A role granted `boards` afterwards gets the narrow, user meaning,
+  and a later revoke sticks. Once every grant has succeeded the
+  `boards_manage_backfilled` setting (`"true"`, module `"boards"`) is set; a
+  failed pass leaves it unset and retries on the next boot. The name of that
+  setting is part of this module's contract: a host that grants the keys in
+  its own migration reads it to know whether this ran.
+  """
+  @impl PhoenixKit.Module
+  def migrate_legacy do
+    if Settings.get_setting(@manage_backfill_key) == "true",
+      do: :ok,
+      else: backfill_manage_permission()
+  rescue
+    error ->
+      Logger.warning("[PhoenixKitBoards] migrate_legacy failed: #{Exception.message(error)}")
+      {:error, Exception.message(error)}
+  end
+
+  @doc false
+  # `:grant` and `:role_grants` are options only so a test can make a grant
+  # or the lookup fail and prove the flag then stays unset; production always
+  # uses core's grant and `role_grants/0`.
+  def backfill_manage_permission(opts \\ []) do
+    grant = Keyword.get(opts, :grant, &Permissions.grant_permission/3)
+    role_grants = Keyword.get(opts, :role_grants, &role_grants/0)
+    key = "#{module_key()}.manage"
+
+    failures =
+      for {role_uuid, granted} <- role_grants.(),
+          module_key() in granted,
+          key not in granted,
+          result = grant.(role_uuid, key, nil),
+          not match?({:ok, _}, result) do
+        {role_uuid, result}
+      end
+
+    with [] <- failures,
+         {:ok, _} <-
+           Settings.update_setting_with_module(@manage_backfill_key, "true", module_key()) do
+      :ok
+    else
+      failed ->
+        Logger.warning(
+          "[PhoenixKitBoards] #{key} backfill incomplete, will retry next boot: " <>
+            inspect(failed)
+        )
+
+        {:error, {:manage_backfill_incomplete, failed}}
+    end
+  end
+
+  # Every role's granted keys, read with a query that RAISES on failure (and
+  # `migrate_legacy/0` rescues it, leaving the flag unset). Core's
+  # `Permissions.get_permissions_for_role/1` rescues a query error to `[]`,
+  # which would read as "this role has no `boards`" and set the flag for good
+  # with the role never granted the sub-key.
+  defp role_grants do
+    import Ecto.Query, only: [from: 2]
+
+    from(rp in PhoenixKit.Users.RolePermission, select: {rp.role_uuid, rp.module_key})
+    |> PhoenixKit.RepoHelper.repo().all()
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+  end
+
+  @doc """
+  Pins the labels `permission_metadata/0` declares as gettext msgids.
+
+  They are plain string literals there, so `mix gettext.extract` never sees
+  them; the permissions matrix translates them at render time through the
+  declared backend, but only msgids already in the catalogue.
+  `dgettext_noop/2` registers the msgid and returns it unchanged.
+  """
+  @spec translatable_labels() :: [String.t()]
+  def translatable_labels do
+    [
+      dgettext_noop("default", "Boards"),
+      dgettext_noop("default", "Manage boards"),
+      dgettext_noop(
+        "default",
+        "Open the boards admin pages and every board, in any place, whoever made it"
+      )
+    ]
   end
 
   @impl PhoenixKit.Module
@@ -96,7 +206,7 @@ defmodule PhoenixKitBoards do
         path: "boards",
         priority: 645,
         level: :admin,
-        permission: module_key(),
+        permission: "#{module_key()}.manage",
         match: :prefix,
         group: :admin_modules
       }
