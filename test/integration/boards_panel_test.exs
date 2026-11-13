@@ -715,6 +715,25 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert html =~ "Paste text or an image"
     end
 
+    # Focusing the panel (a mousedown on it) must not move anything: the hint
+    # is shown by `visible`, so it takes its line while hidden too. A `hidden`
+    # one added a line on mousedown, shifted a centred tile's buttons before the
+    # mouseup, and the first click was lost. The layout itself cannot be seen
+    # from a LiveView test; this pins the classes that decide it.
+    test "the paste hint keeps its place in the layout", %{conn: conn, me: me} do
+      {:ok, lv, html} = mount_panel(conn, me)
+
+      assert has_element?(lv, "p.invisible", "Paste text or an image")
+      refute has_element?(lv, "p.hidden", "Paste text or an image")
+      assert html =~ "group-focus-within/panel:visible"
+      refute html =~ "group-focus-within/panel:block"
+    end
+
+    test "there is no hint where paste is off", %{conn: conn, me: me} do
+      {:ok, _lv, html} = mount_panel(conn, me, paste: false)
+      refute html =~ "Paste text or an image"
+    end
+
     test "the upload input is there while the note form is open", %{conn: conn, me: me} do
       {:ok, lv, _} = mount_panel(conn, me)
       lv |> element("button[phx-click=text_open]") |> render_click()

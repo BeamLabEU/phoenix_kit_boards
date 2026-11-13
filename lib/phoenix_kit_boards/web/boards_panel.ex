@@ -1095,10 +1095,13 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         </select>
       </form>
 
-      <%!-- Only while the widget has focus, which is when a paste is heard. --%>
+      <%!-- Only while the widget has focus, which is when a paste is heard.
+           Always in the layout, shown with `visible`: a `hidden` -> `block` switch
+           added a line to a centred tile on mousedown, moved the buttons before
+           mouseup, and the click then landed on their common ancestor. --%>
       <p
         :if={@paste?}
-        class="hidden text-center text-xs leading-tight text-primary group-focus-within/panel:block"
+        class="invisible text-center text-xs leading-tight text-primary group-focus-within/panel:visible"
       >
         Paste text or an image
       </p>
