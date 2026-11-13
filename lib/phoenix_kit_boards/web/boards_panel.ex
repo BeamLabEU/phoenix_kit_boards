@@ -104,6 +104,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKitBoards.{Access, Boards, Paths, Quick}
+  alias PhoenixKitBoards.Web.BoardLive
 
   @default_limit 11
   @show_all_limit 500
@@ -261,6 +262,16 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp user_uuid(%{uuid: uuid}) when is_binary(uuid), do: uuid
   defp user_uuid(_), do: nil
+
+  @doc false
+  # The overlay frame's permissions. A frame may use Web Bluetooth only when
+  # its parent delegates it, and the board's laser measure needs it; it is
+  # delegated only while the host has the measure on, so a site that never
+  # offers it never hands Bluetooth to a frame.
+  def frame_allow do
+    base = "fullscreen; clipboard-read; clipboard-write"
+    if BoardLive.laser_measure?(), do: base <> "; bluetooth", else: base
+  end
 
   defp actions(nil), do: @all_actions
 
@@ -904,7 +915,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             src={@viewing.src}
             title={@viewing.name}
             class="min-h-0 w-full flex-1 border-0"
-            allow="fullscreen; clipboard-read; clipboard-write; bluetooth"
+            allow={frame_allow()}
             allowfullscreen
           ></iframe>
         </div>

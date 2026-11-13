@@ -100,6 +100,27 @@ defmodule PhoenixKitBoards.Integration.ManageBackfillTest do
     assert Settings.get_setting(@flag) == nil
   end
 
+  # `Settings.get_setting/1` answers nil when it cannot read (a failed query,
+  # `update_mode`). Read through it, a set flag looked unset, and the backfill
+  # ran again over every role that had been given the narrow `boards` since.
+  test "a set flag the settings reader cannot see still grants nothing", ctx do
+    {:ok, _} = Settings.update_setting_with_module(@flag, "true", "boards")
+    previous = Application.fetch_env(:phoenix_kit, :update_mode)
+    Application.put_env(:phoenix_kit, :update_mode, true)
+
+    try do
+      assert Settings.get_setting(@flag) == nil
+      assert :ok = PhoenixKitBoards.migrate_legacy()
+    after
+      case previous do
+        {:ok, value} -> Application.put_env(:phoenix_kit, :update_mode, value)
+        :error -> Application.delete_env(:phoenix_kit, :update_mode)
+      end
+    end
+
+    assert keys(ctx.with_boards) == ["boards"]
+  end
+
   test "a set flag means nothing is granted, even to a role that holds boards", ctx do
     {:ok, _} = Settings.update_setting_with_module(@flag, "true", "boards")
 

@@ -46,6 +46,7 @@ defmodule PhoenixKitBoards do
 
   alias PhoenixKit.Dashboard.Tab
   alias PhoenixKit.Settings
+  alias PhoenixKit.Settings.Queries, as: SettingsQueries
   alias PhoenixKit.Users.Permissions
 
   # ── Required callbacks ─────────────────────────────────────────────────
@@ -119,14 +120,30 @@ defmodule PhoenixKitBoards do
   """
   @impl PhoenixKit.Module
   def migrate_legacy do
-    if Settings.get_setting(@manage_backfill_key) == "true",
-      do: :ok,
-      else: backfill_manage_permission()
+    if manage_backfilled?(), do: :ok, else: backfill_manage_permission()
   rescue
     error ->
       Logger.warning("[PhoenixKitBoards] migrate_legacy failed: #{Exception.message(error)}")
       {:error, Exception.message(error)}
+  catch
+    # A dead pool exits rather than raises.
+    :exit, reason ->
+      Logger.warning("[PhoenixKitBoards] migrate_legacy exited: #{inspect(reason_tag(reason))}")
+      {:error, :exit}
   end
+
+  # Read from the row, as core reads its own backfill flags: a query that
+  # RAISES when the database cannot answer. `Settings.get_setting/1` answers
+  # nil on a failed read (and in `update_mode`), and a nil here re-runs the
+  # backfill, which would make every role granted the narrow `boards` key
+  # since the split a `boards.manage` admin.
+  defp manage_backfilled? do
+    match?(%{value: "true"}, SettingsQueries.get_setting_by_key(@manage_backfill_key))
+  end
+
+  defp reason_tag(reason) when is_tuple(reason) and tuple_size(reason) > 0, do: elem(reason, 0)
+  defp reason_tag(reason) when is_atom(reason), do: reason
+  defp reason_tag(_reason), do: :other
 
   @doc false
   # `:grant` and `:role_grants` are options only so a test can make a grant

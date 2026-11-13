@@ -11,17 +11,17 @@ msgstr ""
 "Language: en\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: lib/phoenix_kit_boards.ex:188
+#: lib/phoenix_kit_boards.ex:205
 #, elixir-autogen, elixir-format
 msgid "Boards"
 msgstr "Boards"
 
-#: lib/phoenix_kit_boards.ex:189
+#: lib/phoenix_kit_boards.ex:206
 #, elixir-autogen, elixir-format
 msgid "Manage boards"
 msgstr "Manage boards"
 
-#: lib/phoenix_kit_boards.ex:190
+#: lib/phoenix_kit_boards.ex:207
 #, elixir-autogen, elixir-format
 msgid "Open the boards admin pages and every board, in any place, whoever made it"
 msgstr "Open the boards admin pages and every board, in any place, whoever made it"

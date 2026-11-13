@@ -11,17 +11,17 @@ msgstr ""
 "Language: et\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: lib/phoenix_kit_boards.ex:188
+#: lib/phoenix_kit_boards.ex:205
 #, elixir-autogen, elixir-format
 msgid "Boards"
 msgstr "Tahvlid"
 
-#: lib/phoenix_kit_boards.ex:189
+#: lib/phoenix_kit_boards.ex:206
 #, elixir-autogen, elixir-format
 msgid "Manage boards"
 msgstr "Tahvlite haldamine"
 
-#: lib/phoenix_kit_boards.ex:190
+#: lib/phoenix_kit_boards.ex:207
 #, elixir-autogen, elixir-format
 msgid "Open the boards admin pages and every board, in any place, whoever made it"
 msgstr "Tahvlite haldusleheküljed ja kõik tahvlid igas kohas, olenemata autorist"

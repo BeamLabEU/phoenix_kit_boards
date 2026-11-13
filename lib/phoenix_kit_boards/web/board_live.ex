@@ -98,10 +98,15 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # true`. Read at mount, not compile time, so the host's config decides.
   @doc false
   def tools do
-    if Application.get_env(:phoenix_kit, :laser_measure, false) == true,
-      do: @tools ++ [:measure],
-      else: @tools
+    if laser_measure?(), do: @tools ++ [:measure], else: @tools
   end
+
+  @doc """
+  Whether the host turned on Etcher's laser measure
+  (`config :phoenix_kit, laser_measure: true`). Only a literal `true` does.
+  """
+  @spec laser_measure?() :: boolean()
+  def laser_measure?, do: Application.get_env(:phoenix_kit, :laser_measure, false) == true
 
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
