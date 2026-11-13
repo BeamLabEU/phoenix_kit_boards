@@ -24,7 +24,10 @@ defmodule PhoenixKitBoards.DataCase do
     end
   end
 
+  import Ecto.Query, only: [from: 2]
+
   alias Ecto.Adapters.SQL.Sandbox
+  alias PhoenixKit.Users.{Permissions, Roles}
   alias PhoenixKitBoards.Test.Repo, as: TestRepo
 
   setup tags do
@@ -50,5 +53,47 @@ defmodule PhoenixKitBoards.DataCase do
       )
     )
     |> TestRepo.insert!()
+  end
+
+  @doc """
+  Gives `user` a role holding `keys` (default: the base `"boards"` key alone,
+  which is what an ordinary signed-in user of a host needs) and returns the
+  user. `"boards.manage"` brings the base key with it.
+  """
+  def grant_boards(user, keys \\ ["boards"]) do
+    n = System.unique_integer([:positive])
+    {:ok, role} = Roles.create_role(%{name: "boards-test-#{n}"})
+    {:ok, _} = Roles.assign_role(user, role.name)
+
+    for key <- keys do
+      {:ok, _} = Permissions.grant_permission(role.uuid, key, nil)
+    end
+
+    user
+  end
+
+  @doc "A user with the base `\"boards\"` key: the ordinary signed-in user of a host."
+  def board_user_fixture(attrs \\ %{}), do: attrs |> user_fixture() |> grant_boards()
+
+  @doc "A user holding `\"boards.manage\"`: the admin."
+  def board_admin_fixture(attrs \\ %{}),
+    do: attrs |> user_fixture() |> grant_boards(["boards.manage"])
+
+  @doc """
+  Takes keys away from every role `user` holds (all of them by default), as an
+  admin's permissions screen would.
+  """
+  def revoke_boards(user, keys \\ nil) do
+    roles =
+      from(ra in PhoenixKit.Users.RoleAssignment,
+        where: ra.user_uuid == ^user.uuid,
+        select: ra.role_uuid
+      )
+
+    query = from(rp in PhoenixKit.Users.RolePermission, where: rp.role_uuid in subquery(roles))
+    query = if keys, do: from(rp in query, where: rp.module_key in ^keys), else: query
+
+    TestRepo.delete_all(query)
+    user
   end
 end

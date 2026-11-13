@@ -124,11 +124,26 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     # render a spinner; `render/1` has a matching `board: nil` clause that
     # deliberately omits #board-root, so the connected render inserts that
     # subtree fresh rather than having `phx-update="ignore"` pin a skeleton.
-    if connected?(socket) do
-      mount_connected(id, socket)
-    else
-      {:ok, assign(socket, :board, nil)}
+    cond do
+      not route_allowed?(socket) -> {:ok, refuse_admin(socket)}
+      connected?(socket) -> mount_connected(id, socket)
+      true -> {:ok, assign(socket, :board, nil)}
     end
+  end
+
+  # The admin route cannot be tied to `boards.manage` by core (`route_module/0`
+  # routes carry no permission of their own, and the router only checks the
+  # base key), so the page asks itself. The user route is the board's own
+  # rules, below.
+  defp route_allowed?(socket) do
+    socket.assigns[:live_action] == :user or
+      Access.admin?(socket.assigns[:phoenix_kit_current_scope])
+  end
+
+  defp refuse_admin(socket) do
+    socket
+    |> put_flash(:error, "You do not have access to the boards admin.")
+    |> push_navigate(to: Paths.admin())
   end
 
   defp mount_connected(id, socket) do
@@ -153,9 +168,11 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  # The admin route is already behind the admin gate and the `boards`
-  # permission, as it has always been. The user route is where a board's own
-  # rules apply: private is its creator's, and the host decides the place.
+  # The admin route is for holders of `boards.manage`, who open anything; the
+  # session's scope, which core refreshes when roles change, is asked again on
+  # every event and every few seconds, as on the user route. The user route is
+  # where a board's own rules apply: private is its creator's, and the host
+  # decides the place.
   defp may_open?(board, socket) do
     case socket.assigns[:live_action] do
       :user ->
@@ -166,7 +183,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
         )
 
       _ ->
-        true
+        Access.admin?(socket.assigns[:phoenix_kit_current_scope])
     end
   end
 
@@ -261,7 +278,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # of them.
   @max_unfurls 3
 
-  defp watch_access(%{assigns: %{live_action: :user}} = socket) do
+  defp watch_access(%{assigns: %{live_action: action}} = socket) when action in [:user, :show] do
     Process.send_after(self(), :board_access_check, @access_check_ms)
 
     socket
@@ -292,12 +309,22 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     else
       _ ->
         PubSub.unsubscribe(PubSubHelper.pubsub(), socket.assigns.topic)
-        {:ok, socket} = not_found(assign(socket, :board, nil))
-        {:error, socket}
+        {:error, leave(assign(socket, :board, nil))}
     end
   end
 
   defp refresh_access(socket), do: {:ok, socket}
+
+  # An admin page whose `boards.manage` was taken away says so; any other
+  # reason (the board is gone, private now, the host refuses) is "not found".
+  defp leave(socket) do
+    if route_allowed?(socket) do
+      {:ok, socket} = not_found(socket)
+      socket
+    else
+      refuse_admin(socket)
+    end
+  end
 
   # Boards written before images were uploaded — or while an upload was
   # failing — carry the bytes inline. Doing this at open rather than waiting

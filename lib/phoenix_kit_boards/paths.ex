@@ -7,6 +7,9 @@ defmodule PhoenixKitBoards.Paths do
 
   alias PhoenixKit.Utils.Routes
 
+  @doc "The admin home, where a refusal on the admin pages goes."
+  def admin, do: Routes.path("/admin")
+
   @doc "The boards list page."
   def boards, do: Routes.path("/admin/boards")
 

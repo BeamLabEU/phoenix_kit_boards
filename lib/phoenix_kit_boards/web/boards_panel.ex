@@ -45,7 +45,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       (`{"project", uuid}`, `{"order", 1001}`, `{"page", "/docs/setup"}`), kept as
       strings, which is what the `:authorize` hook is given. `nil` is the boards
       that belong nowhere — the ones `/admin/boards` lists — and like them is
-      shown only to users holding the `"boards"` admin permission; a place with
+      shown only to users holding `"boards.manage"`; a place with
       a missing id shows nothing at all
     * `label` — what the place's media folder is called, and a small heading
     * `show_label` — `false` to keep the label for the folder name but not draw
@@ -204,8 +204,9 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     user = socket.assigns.user
     valid? = socket.assigns.scope_ok?
 
-    can_view? = valid? and Access.can_list?(user, scope)
-    can_create? = can_view? and Access.can?(:create, user, scope)
+    phoenix_scope = if valid?, do: scope_of_user(user)
+    can_view? = valid? and Access.can_list?(user, scope, phoenix_scope)
+    can_create? = can_view? and Access.can?(:create, user, scope, phoenix_scope)
 
     socket
     |> clear_capture(socket.assigns[:can_create?] == true and not can_create?)
@@ -251,7 +252,12 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   end
 
   defp admin?(nil), do: false
-  defp admin?(user), do: user |> Scope.for_user() |> Access.admin?()
+  defp admin?(user), do: user |> scope_of_user() |> Access.admin?()
+
+  # Built from the user at each check, not kept: a permission taken away must
+  # show on the next refresh. Once per check, handed on to `Access`.
+  defp scope_of_user(%PhoenixKit.Users.Auth.User{} = user), do: Scope.for_user(user)
+  defp scope_of_user(_), do: nil
 
   defp user_uuid(%{uuid: uuid}) when is_binary(uuid), do: uuid
   defp user_uuid(_), do: nil
@@ -697,8 +703,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp allow_create(socket) do
     assigns = socket.assigns
 
-    if assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope) and
-         Access.can?(:create, assigns.user, assigns.scope),
+    phoenix_scope = if assigns.scope_ok?, do: scope_of_user(assigns.user)
+
+    if assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope, phoenix_scope) and
+         Access.can?(:create, assigns.user, assigns.scope, phoenix_scope),
        do: :ok,
        else: {:error, "You cannot add boards here."}
   end
@@ -714,7 +722,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   # The board the browser named, only if it is in THIS widget's place and the
   # user may see it. An id from anywhere else is as good as none.
   defp visible_board(%{assigns: assigns}, id) do
-    with true <- assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope),
+    phoenix_scope = if assigns.scope_ok?, do: scope_of_user(assigns.user)
+
+    with true <-
+           assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope, phoenix_scope),
          board when not is_nil(board) <- Boards.get_board(id, include_data: false) do
       if Boards.scope_of(board) == assigns.scope and
            Boards.visible_to?(board, assigns.user_uuid),

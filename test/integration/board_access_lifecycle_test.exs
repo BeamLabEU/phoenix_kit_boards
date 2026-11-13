@@ -39,8 +39,8 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
   end
 
   setup do
-    owner = user_fixture()
-    other = user_fixture()
+    owner = board_user_fixture()
+    other = board_user_fixture()
     {:ok, board} = Quick.create_note({"project", "access"}, owner.uuid, "Original")
 
     # The test database's bucket writes under a RELATIVE path, i.e. into this
@@ -59,9 +59,9 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     %{owner: owner, other: other, board: board}
   end
 
-  defp open(board, user) do
+  defp open(board, user, extra \\ %{}) do
     live_isolated(build_conn(), BoardHostLive,
-      session: %{"user_uuid" => user.uuid, "board_uuid" => board.uuid}
+      session: Map.merge(%{"user_uuid" => user.uuid, "board_uuid" => board.uuid}, extra)
     )
   end
 
@@ -116,6 +116,46 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
     send(lv.pid, :board_access_check)
     assert_redirect(lv, "/projects")
+  end
+
+  # The base `boards` key is what lets anyone onto `/dashboard/boards/:id`;
+  # the host's hook only narrows it.
+  test "a user without the base key is told the board is not found", ctx do
+    Application.delete_env(:phoenix_kit_boards, :authorize)
+    keyless = user_fixture()
+
+    assert {:error, {:redirect, %{to: "/projects"}}} = open(ctx.board, keyless)
+  end
+
+  test "revoking the base key disconnects an existing viewer", ctx do
+    {:ok, lv, _} = open(ctx.board, ctx.other)
+    revoke_boards(ctx.other)
+
+    send(lv.pid, :board_access_check)
+    assert_redirect(lv, "/projects")
+  end
+
+  # In a host the page holds the scope core built when it mounted, and core
+  # rebuilds it on `{:phoenix_kit_scope_roles_updated, _}`. The revoke reaches
+  # the viewer through that, and not before it.
+  test "with the scope snapshot a host keeps, the revoke lands when core refreshes it", ctx do
+    {:ok, lv, _} = open(ctx.board, ctx.other, %{"snapshot" => true})
+    revoke_boards(ctx.other)
+
+    send(lv.pid, :board_access_check)
+    assert render(lv) =~ "board-root"
+
+    send(lv.pid, {:phoenix_kit_scope_roles_updated, ctx.other.uuid})
+    send(lv.pid, :board_access_check)
+    assert_redirect(lv, "/projects")
+  end
+
+  test "a holder of the admin key opens a board the host refuses", ctx do
+    Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
+    admin = board_admin_fixture()
+
+    {:ok, _lv, html} = open(ctx.board, admin)
+    assert html =~ "board-root"
   end
 
   test "deleting a board disconnects its existing viewers", ctx do
