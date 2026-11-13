@@ -92,6 +92,17 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     :pointer
   ]
 
+  # Etcher 0.26's laser measure (a Bosch meter's readings become shape
+  # labels) joins the tools only when the host turns it on, with the same
+  # switch core's media viewer reads: `config :phoenix_kit, laser_measure:
+  # true`. Read at mount, not compile time, so the host's config decides.
+  @doc false
+  def tools do
+    if Application.get_env(:phoenix_kit, :laser_measure, false) == true,
+      do: @tools ++ [:measure],
+      else: @tools
+  end
+
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
   @impl true
@@ -253,7 +264,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
      # stored while that client was away is missing from what it sends,
      # and without this every one of them would read as a delete.
      |> assign(:peer_arrivals, arrivals_now(Boards.annotations(canvas)))
-     |> assign(:tools, @tools)
+     |> assign(:tools, tools())
      |> assign(:topic, topic)
      |> assign(:me, me)
      |> allow_upload(:board_image,
