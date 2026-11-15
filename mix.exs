@@ -61,25 +61,11 @@ defmodule PhoenixKitBoards.MixProject do
 
   defp deps do
     [
-      # 1.7.189, not a bare `~> 1.7`: `Board` does `use PhoenixKit.SchemaPrefix`
-      # and the migration calls
-      # `PhoenixKit.Migrations.Postgres.Helpers.uuid_v7_call/1` — both first
-      # shipped in core 1.7.189, and neither is guarded. `~> 1.7` admits
-      # 1.7.0, which resolves a core with no such module: a compile error in
-      # the consumer's build, not a degraded feature. (`PhoenixKit.Module`
-      # needs 1.7.46, `PubSubHelper` 1.7.28, `Dashboard.Tab` 1.7.21 — all
-      # covered by the same floor.)
-      #
-      # 2.64.1 is where the floor sits now, for the places and per-board media
-      # folders: `Storage.ResourceFolders` (find-or-create, the pointer, filing a
-      # file), `Storage.Libraries.media?/1`, `Storage.create_folder/1`,
-      # `Storage.trash_folder/1`, `Storage.store_file_in_buckets/7`'s
-      # `:library_uuid`, `Auth.merge_user_custom_fields/3`, `Scope.can?/2` and
-      # `Components.Core.TimeDisplay`. Each is unguarded, so a core without one
-      # is a compile or runtime error in the host, not a degraded feature. It is
-      # the oldest core those were checked to exist in (2.64.1, 2.65.0, 3.0.0);
-      # the suite runs against 3.0.0.
-      pk_dep(:phoenix_kit, ">= 2.64.1 and < 4.0.0"),
+      # Floor 3.5.0, the ecosystem-wide minimum core. The ceiling is open
+      # through core 3.x. The core APIs this module calls (`SchemaPrefix`,
+      # `Storage.ResourceFolders`, `Scope.can?/2`, ...) are unguarded, so a core
+      # without one is a compile or runtime error in the host.
+      pk_dep(:phoenix_kit, ">= 3.5.0 and < 4.0.0"),
       {:phoenix_live_view, "~> 1.1"},
       # The label and description of `boards.manage` in the admin permissions
       # matrix are translated through this module's own backend.
