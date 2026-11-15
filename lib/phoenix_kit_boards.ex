@@ -33,7 +33,7 @@ defmodule PhoenixKitBoards do
   ## Installation
 
       # host mix.exs
-      {:phoenix_kit_boards, "~> 0.7"}
+      {:phoenix_kit_boards, "~> 0.8"}
 
   Then `mix deps.get` and `mix phoenix_kit.update` (creates the
   `phoenix_kit_boards` table). Enable it on the admin Modules page.
@@ -77,7 +77,7 @@ defmodule PhoenixKitBoards do
   # ── Optional callbacks ─────────────────────────────────────────────────
 
   @impl PhoenixKit.Module
-  def version, do: "0.7.0"
+  def version, do: "0.8.0"
 
   @impl PhoenixKit.Module
   def permission_metadata do

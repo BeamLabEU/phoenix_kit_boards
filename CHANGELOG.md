@@ -4,7 +4,7 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.8.0 - 2026-11-15
 
 Needs **phoenix_kit 3.6.0** or later, the first core that admits fresco 0.16
 and etcher 0.25.
@@ -70,6 +70,12 @@ and etcher 0.25.
   immediately**, including when the person still holds `boards`. The widget
   drops rename and delete for boards the person does not own on its next
   refresh.
+- **Escape closes the overlay from inside the board too.** Key presses inside
+  the frame never reached the page around it. An Escape that Etcher uses (to
+  cancel a stroke, deselect or close a menu) and one typed into a field still
+  stay with the board.
+- **A board closed when access was lost no longer reopens when access comes
+  back**, and an export interrupted that way does not restart on its own.
 
 ## 0.7.0 - 2026-11-11
 
