@@ -109,7 +109,13 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   @default_limit 11
   @show_all_limit 500
   @default_poll 5_000
-  @export_timeout_ms 45_000
+  # Until the browser says the export has started (the script never loaded,
+  # or it threw before `exportPdf`). After `export_started`, the longer watch
+  # covers the export itself — a board of images can outlast the first one,
+  # and giving up then would report a failure while the download is still
+  # being built.
+  @export_wait_timeout_ms 45_000
+  @export_run_timeout_ms 180_000
   @all_actions [:empty, :text, :image]
   @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
   @image_max_bytes 25_000_000
@@ -154,14 +160,19 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   # One chain of timers per widget: a tick clears the flag and re-arms, and a
   # host re-render in between finds it set and does not start a second chain.
-  # The export's own watchdog, in case the browser never reports back (the
-  # hook failed to load, or the page threw before it could). The script gives
-  # up after 30 s; this is the server's later backstop, so the tile's
-  # "Export as PDF" is never disabled for good. Only the export it was armed
-  # for: a newer one has its own.
-  def update(%{export_timeout: seq}, socket) do
+  #
+  # The export's watchdog. `export_phase` defaults to `:wait`, which is the
+  # watch armed when the export begins: a browser that never answers (the
+  # hook failed to load) still frees "Export as PDF". Once the hook reports
+  # `export_started` the phase is `:running` and only that watch ends it, so
+  # the waiting one cannot cut off an export that is already drawing. A
+  # message for another seq, or for the phase this export is no longer in,
+  # changes nothing.
+  def update(%{export_timeout: seq} = assigns, socket) do
+    phase = Map.get(assigns, :export_phase, :wait)
+
     case socket.assigns[:exporting] do
-      %{seq: ^seq} ->
+      %{seq: ^seq, phase: ^phase} ->
         {:ok, socket |> assign(:exporting, nil) |> fail("Could not export the board as a PDF.")}
 
       _ ->
@@ -209,7 +220,6 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:script_nonce, assigns[:script_nonce])
     |> assign(:visibility_options, visibility_options(assigns[:visibility_options]))
     |> assign(:default_visibility, default_visibility(assigns))
-    |> assign(:admin?, admin?(user))
     |> reset_context(previous != {user_uuid, scope, scope_ok?})
     |> constrain_visibility()
   end
@@ -229,6 +239,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> clear_capture(socket.assigns[:can_create?] == true and not can_create?)
     |> assign(:can_view?, can_view?)
     |> assign(:can_create?, can_create?)
+    # The menu reads this. Clicks ask `admin?/1` again; the menu has to move
+    # on the same refresh as the list, or a revoked admin keeps seeing rename
+    # and delete until the host re-renders the widget.
+    |> assign(:admin?, Access.admin?(phoenix_scope))
   end
 
   defp reset_context(%{assigns: %{initialized?: true}} = socket, true) do
@@ -591,8 +605,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
       Phoenix.LiveView.send_update_after(
         __MODULE__,
-        [id: socket.assigns.id, export_timeout: seq],
-        @export_timeout_ms
+        [id: socket.assigns.id, export_timeout: seq, export_phase: :wait],
+        @export_wait_timeout_ms
       )
 
       {:noreply,
@@ -601,6 +615,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
        |> assign(:error, nil)
        |> assign(:exporting, %{
          seq: seq,
+         phase: :wait,
          id: board.uuid,
          name: board.name,
          canvas: Boards.load_canvas(board),
@@ -609,6 +624,29 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     else
       nil -> {:noreply, refuse(socket, {:error, :gone})}
       error -> {:noreply, refuse(socket, error)}
+    end
+  end
+
+  # The hook is about to call `exportPdf`. Move this export onto the longer
+  # watch, once: a repeat, or a seq that is not the export on screen, must
+  # not keep it alive.
+  def handle_event("export_started", params, socket) do
+    case socket.assigns[:exporting] do
+      %{phase: :wait, seq: seq} = exporting ->
+        if current_export?(exporting, params["seq"]) do
+          Phoenix.LiveView.send_update_after(
+            __MODULE__,
+            [id: socket.assigns.id, export_timeout: seq, export_phase: :running],
+            @export_run_timeout_ms
+          )
+
+          {:noreply, assign(socket, :exporting, %{exporting | phase: :running})}
+        else
+          {:noreply, socket}
+        end
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -811,6 +849,26 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   defp current_export?(%{seq: seq}, reported), do: reported in [seq, Integer.to_string(seq)]
   defp current_export?(_exporting, _reported), do: false
 
+  # The download name. Fresco uses `opts.filename` as-is and skips
+  # `exportName`, which would have added ".pdf" and replaced characters a
+  # filesystem refuses. The hook cleans again, the same way, so a name that
+  # never reached this function still downloads safely. Keep the two in step
+  # (`priv/static/assets/boards_panel_export.js`).
+  @doc false
+  @spec pdf_filename(String.t()) :: String.t()
+  def pdf_filename(name) when is_binary(name) do
+    base =
+      name
+      |> String.replace(~r/[\x00-\x1F\x7F]/u, "")
+      |> String.replace(~r/\.[A-Za-z0-9]{2,5}\z/, "")
+      |> String.replace(~r/[\\\/:\*\?"<>|]+/u, "_")
+      |> String.trim()
+      |> String.trim_leading(".")
+      |> String.trim()
+
+    if base == "", do: "board.pdf", else: base <> ".pdf"
+  end
+
   defp open_mode(mode) when mode in [:navigate, :new_tab, :overlay], do: mode
   defp open_mode(_), do: :overlay
 
@@ -971,7 +1029,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         phx-hook="BoardsPanelExport"
         phx-update="ignore"
         data-fresco-id={@exporting.fresco_id}
-        data-filename={@exporting.name}
+        data-filename={pdf_filename(@exporting.name)}
         data-seq={@exporting.seq}
         aria-hidden="true"
         inert

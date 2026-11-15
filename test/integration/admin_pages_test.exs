@@ -54,13 +54,19 @@ defmodule PhoenixKitBoards.Integration.AdminPagesTest do
     end
   end
 
-  # Core rebuilds the scope in the page's assigns when roles change; the page
-  # asks it again, so an open page does not outlive the key.
+  # Core rebuilds the scope when roles change and calls
+  # `phoenix_kit_scope_changed/1`. The route's module key is the base
+  # `boards` key, so losing only `boards.manage` does not evict the page:
+  # the callback has to. `{:replace_scope, user}` rebuilds the assign and
+  # skips the callback, which is how the event hook and the five-second
+  # check are still reached.
   describe "boards.manage taken away from an open page" do
     defp refresh_scope(lv, user),
       do: send(lv.pid, {:phoenix_kit_scope_roles_updated, user.uuid})
 
-    test "the list stops answering events" do
+    defp replace_scope(lv, user), do: send(lv.pid, {:replace_scope, user})
+
+    test "the list leaves as soon as the scope is refreshed" do
       admin = board_admin_fixture()
       {:ok, lv, _} = open("index", admin)
       before = length(Boards.list_boards(include_data: false))
@@ -68,8 +74,27 @@ defmodule PhoenixKitBoards.Integration.AdminPagesTest do
       revoke_boards(admin, ["boards.manage"])
       refresh_scope(lv, admin)
 
+      assert_redirect(lv, @admin_home)
+      assert length(Boards.list_boards(include_data: false)) == before
+    end
+
+    test "the list stops answering events once the assign no longer manages" do
+      admin = board_admin_fixture()
+      {:ok, lv, _} = open("index", admin)
+      before = length(Boards.list_boards(include_data: false))
+
+      revoke_boards(admin, ["boards.manage"])
+      replace_scope(lv, admin)
+
       assert {:error, {:live_redirect, %{to: @admin_home}}} = render_hook(lv, "create", %{})
       assert length(Boards.list_boards(include_data: false)) == before
+    end
+
+    test "a scope refresh while boards.manage is held stays on the list" do
+      admin = board_admin_fixture()
+      {:ok, lv, _} = open("index", admin)
+      refresh_scope(lv, admin)
+      assert render(lv) =~ "New board"
     end
 
     test "the list still answers while the key is held" do
@@ -78,12 +103,22 @@ defmodule PhoenixKitBoards.Integration.AdminPagesTest do
       assert length(Boards.list_boards(include_data: false)) >= 2
     end
 
-    test "a board page is left on the next check", %{board: board} do
+    test "a board page leaves as soon as the scope is refreshed", %{board: board} do
       admin = board_admin_fixture()
       {:ok, lv, _} = open("show", admin, board)
 
       revoke_boards(admin, ["boards.manage"])
       refresh_scope(lv, admin)
+
+      assert_redirect(lv, @admin_home)
+    end
+
+    test "a board page is left on the next check when the callback did not run", %{board: board} do
+      admin = board_admin_fixture()
+      {:ok, lv, _} = open("show", admin, board)
+
+      revoke_boards(admin, ["boards.manage"])
+      replace_scope(lv, admin)
       send(lv.pid, :board_access_check)
 
       assert_redirect(lv, @admin_home)
@@ -94,7 +129,7 @@ defmodule PhoenixKitBoards.Integration.AdminPagesTest do
       {:ok, lv, _} = open("show", admin, board)
 
       revoke_boards(admin, ["boards.manage"])
-      refresh_scope(lv, admin)
+      replace_scope(lv, admin)
 
       assert {:error, {:live_redirect, %{to: @admin_home}}} =
                render_hook(lv, "etcher:annotations-changed", %{"annotations" => []})

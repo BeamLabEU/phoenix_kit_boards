@@ -121,7 +121,9 @@ Two keys, in the admin's permissions matrix:
 - **`boards.manage`** — the admin's. `/admin/boards` and `/admin/boards/:id`, and
   every board in every place, private ones included, with no hook asked. Without
   it those two pages send the user to the admin home. (PhoenixKit cannot tie a
-  module's own routes to a sub-key, so the pages check it themselves.)
+  module's own routes to a sub-key, so the pages check it themselves.) Taking
+  `boards.manage` away closes an open admin list or board as soon as the
+  session's scope is refreshed, including when the person still holds `boards`.
 
 On first start after an upgrade, every role that held `boards` is given
 `boards.manage`, so nobody loses the admin pages; the `boards_manage_backfilled`

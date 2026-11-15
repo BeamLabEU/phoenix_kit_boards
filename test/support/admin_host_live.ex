@@ -44,15 +44,36 @@ defmodule PhoenixKitBoards.Test.AdminHostLive do
 
   def handle_event(event, params, socket), do: BoardLive.handle_event(event, params, socket)
 
-  # What core's scope hook does when roles change: the snapshot in the assigns
-  # is rebuilt, and the message goes no further.
+  # What core's scope hook does when roles change: rebuild the snapshot, then
+  # call `phoenix_kit_scope_changed/1` on the page. This host is the LiveView
+  # in tests, so it makes that call itself. `{:replace_scope, user}` only
+  # rebuilds the assign, which is how a test reaches the event hook without
+  # the callback having already left the page.
   @impl true
   def handle_info({:phoenix_kit_scope_roles_updated, _uuid}, socket) do
-    user = socket.assigns.phoenix_kit_current_user
-    {:noreply, assign(socket, :phoenix_kit_current_scope, Scope.for_user(user))}
+    {:noreply, refresh_scope(socket, true)}
+  end
+
+  def handle_info({:replace_scope, user}, socket) do
+    {:noreply, refresh_scope(assign(socket, :phoenix_kit_current_user, user), false)}
   end
 
   def handle_info(message, socket), do: BoardLive.handle_info(message, socket)
+
+  defp refresh_scope(socket, callback?) do
+    user = socket.assigns.phoenix_kit_current_user
+    socket = assign(socket, :phoenix_kit_current_scope, Scope.for_user(user))
+
+    if callback? do
+      case socket.assigns.page do
+        "index" -> IndexLive.phoenix_kit_scope_changed(socket)
+        "show" -> BoardLive.phoenix_kit_scope_changed(socket)
+        _ -> socket
+      end
+    else
+      socket
+    end
+  end
 
   @impl true
   def terminate(reason, socket), do: BoardLive.terminate(reason, socket)

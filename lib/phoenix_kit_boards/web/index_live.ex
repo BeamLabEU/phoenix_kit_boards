@@ -23,9 +23,19 @@ defmodule PhoenixKitBoards.Web.IndexLive do
     end
   end
 
-  # The session's scope is refreshed by core when roles change, so an open
-  # page whose `boards.manage` was taken away stops doing anything on its next
-  # event.
+  # Core refreshes the session scope when roles change and then calls this.
+  # The route's module key is the base `boards` key, so a visitor who loses
+  # `boards.manage` and still holds `boards` stays on the page unless it
+  # leaves itself. `push_navigate` here survives core's `:stay`.
+  @doc false
+  @spec phoenix_kit_scope_changed(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def phoenix_kit_scope_changed(socket) do
+    if Access.admin?(socket.assigns[:phoenix_kit_current_scope]),
+      do: socket,
+      else: refuse(socket)
+  end
+
+  # The same check for a click that meets an assign already replaced.
   defp recheck_admin(_event, _params, socket) do
     if Access.admin?(socket.assigns[:phoenix_kit_current_scope]),
       do: {:cont, socket},

@@ -37,6 +37,8 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
   # An event as the browser could send it, to the panel (not the host page).
   defp fire(lv, event, params), do: lv |> with_target("#panel") |> render_click(event, params)
 
+  defp hook(lv, event, params), do: lv |> with_target("#panel") |> render_hook(event, params)
+
   defmodule Spy do
     def can?(action, _user, scope) do
       if pid = Process.get(:spy), do: send(pid, {:asked, action, scope})
@@ -380,6 +382,21 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       html = render(lv)
       refute html =~ "Revoked key"
       refute html =~ "panel-new"
+    end
+
+    test "a revoked admin loses manage actions on the next refresh", %{conn: conn, me: me} do
+      board!(me, "Foreign plan")
+      admin = board_admin_fixture()
+      {:ok, lv, html} = mount_panel(conn, admin)
+      assert html =~ "Foreign plan"
+      assert html =~ "Rename"
+
+      revoke_boards(admin, ["boards.manage"])
+      BoardsPanel.refresh("panel", lv.pid)
+
+      html = render(lv)
+      assert html =~ "Foreign plan"
+      refute html =~ "Rename"
     end
 
     test "boards.manage sees and adds in a place the host refuses, with no hook asked",
@@ -1168,7 +1185,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
 
       html = fire(lv, "export_pdf", %{"id" => board.uuid})
       assert html =~ ~s(phx-hook="BoardsPanelExport")
-      assert html =~ ~s(data-filename="Q3 plan")
+      assert html =~ ~s(data-filename="Q3 plan.pdf")
       assert html =~ ~s(data-phx-runtime-hook="BoardsPanelExport")
       assert html =~ "Exporting “Q3 plan” as a PDF"
       assert has_element?(lv, "[phx-hook=BoardsPanelExport] [data-fresco-id]")
@@ -1241,6 +1258,87 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       end
 
       refute fire(lv, "export_pdf", %{"id" => Ecto.UUID.generate()}) =~ "BoardsPanelExport"
+    end
+
+    test "the download name is safe, and the status line keeps the board's name", %{
+      conn: conn,
+      me: me
+    } do
+      board = board!(me, "Q3: plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      html = fire(lv, "export_pdf", %{"id" => board.uuid})
+      assert html =~ ~s(data-filename="Q3_ plan.pdf")
+      assert html =~ "Exporting “Q3: plan” as a PDF"
+    end
+
+    # The waiting watchdog is for a browser that never starts. Once the hook
+    # says it has, only the running watchdog ends the export.
+    test "an export that has started outlives the waiting watchdog", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      fire(lv, "export_pdf", %{"id" => board.uuid})
+      hook(lv, "export_started", %{"seq" => "1"})
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        export_timeout: 1,
+        export_phase: :wait
+      )
+
+      assert render(lv) =~ "panel-export-1-host"
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        export_timeout: 1,
+        export_phase: :running
+      )
+
+      html = render(lv)
+      refute html =~ "BoardsPanelExport"
+      assert html =~ "Could not export the board as a PDF."
+    end
+
+    test "a late start from an earlier export does not protect the next one", %{
+      conn: conn,
+      me: me
+    } do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      fire(lv, "export_pdf", %{"id" => board.uuid})
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel, id: "panel", export_timeout: 1)
+      assert render(lv) =~ "Could not export the board as a PDF."
+
+      # The abandoned export reporting that it started changes nothing.
+      hook(lv, "export_started", %{"seq" => "1"})
+      assert render(lv) =~ "Could not export the board as a PDF."
+
+      assert fire(lv, "export_pdf", %{"id" => board.uuid}) =~ "panel-export-2-host"
+      hook(lv, "export_started", %{"seq" => "1"})
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel,
+        id: "panel",
+        export_timeout: 2,
+        export_phase: :wait
+      )
+
+      html = render(lv)
+      refute html =~ "BoardsPanelExport"
+      assert html =~ "Could not export the board as a PDF."
+    end
+
+    test "moving the widget to another place takes down an export", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      assert fire(lv, "export_pdf", %{"id" => board.uuid}) =~ "panel-export-1-host"
+
+      send(lv.pid, {:set_opts, scope: {"project", "elsewhere"}})
+      html = render(lv)
+      refute html =~ "BoardsPanelExport"
+      refute html =~ "Exporting"
     end
   end
 

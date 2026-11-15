@@ -136,7 +136,10 @@ Implemented via `pk_dep/3` in `mix.exs` — never hand-edit a path dep in.
 `permission: "boards.manage"`, but core cannot tie a `route_module/0` route to a
 sub-key (the router checks the base key only), so `Web.IndexLive` and `Web.BoardLive`
 on the `:show` action ask `Access.admin?/1` themselves and redirect to the admin home
-with a flash. `/dashboard/boards/:id` (`:user`) is the user side: `Access.can_open?/3`.
+with a flash. The route's module key is the base `boards` key, so core's scope
+refresh stays on the page when `boards.manage` is taken away and `boards` remains.
+Both pages export `phoenix_kit_scope_changed/1` and leave in that callback.
+`/dashboard/boards/:id` (`:user`) is the user side: `Access.can_open?/3`.
 
 `migrate_legacy/0` grants `boards.manage` once to every role holding `boards`, then
 sets the `boards_manage_backfilled` setting (`"true"`, module `"boards"`). That name is a

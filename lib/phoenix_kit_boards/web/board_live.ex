@@ -192,11 +192,13 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  # The admin route is for holders of `boards.manage`, who open anything; the
-  # session's scope, which core refreshes when roles change, is asked again on
-  # every event and every few seconds, as on the user route. The user route is
-  # where a board's own rules apply: private is its creator's, and the host
-  # decides the place.
+  # The admin route is for holders of `boards.manage`, who open anything. When
+  # roles change, core refreshes the session scope and calls
+  # `phoenix_kit_scope_changed/1`. The route's module key is the base `boards`
+  # key, so a visitor who loses `boards.manage` and still holds `boards` stays
+  # unless this page leaves. It does, in that callback, and again on every
+  # event and every few seconds. The user route is where a board's own rules
+  # apply: private is its creator's, and the host decides the place.
   defp may_open?(board, socket) do
     case socket.assigns[:live_action] do
       :user ->
@@ -336,6 +338,18 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     case refresh_access(socket) do
       {:ok, socket} -> {:cont, socket}
       {:error, socket} -> {:halt, socket}
+    end
+  end
+
+  # Core calls this from its scope-refresh hook, after the scope assign is
+  # updated and before it decides to stay. A `:stay` returns this socket, so
+  # the redirect from `leave/1` is what the visitor gets.
+  @doc false
+  @spec phoenix_kit_scope_changed(Phoenix.LiveView.Socket.t()) :: Phoenix.LiveView.Socket.t()
+  def phoenix_kit_scope_changed(socket) do
+    case refresh_access(socket) do
+      {:ok, socket} -> socket
+      {:error, socket} -> socket
     end
   end
 

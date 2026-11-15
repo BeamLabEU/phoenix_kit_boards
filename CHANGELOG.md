@@ -59,6 +59,17 @@ and etcher 0.25.
   an export taken down early stops polling for the drawing layer.
 - **Moving the widget to another place closes an open board and cancels an
   export**, instead of leaving the old place's board over the new one.
+- **A PDF exported from a tile is named like one from the board page.** The
+  download is `<name>.pdf`, and `\ / : * ? " < > |` are replaced. The status
+  line still shows the board's real name.
+- **A slow PDF export is no longer reported as failed while it is still
+  running.** The 45 second limit applies until the browser starts the export.
+  After that the server waits three minutes. A copy taken down in that window
+  does not start the download.
+- **Taking `boards.manage` away closes the admin list and an open board
+  immediately**, including when the person still holds `boards`. The widget
+  drops rename and delete for boards the person does not own on its next
+  refresh.
 
 ## 0.7.0 - 2026-11-11
 
