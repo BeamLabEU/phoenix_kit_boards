@@ -1133,6 +1133,21 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       end
     end
 
+    # The overlay belongs to the place it was opened from: the host moving the
+    # widget elsewhere closes it rather than leave the old board over the new
+    # place's tiles.
+    test "moving the widget to another place closes the open board", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _} = mount_panel(conn, me)
+
+      assert fire(lv, "open_board", %{"id" => board.uuid}) =~ ~s(role="dialog")
+
+      send(lv.pid, {:set_opts, scope: {"project", "elsewhere"}})
+      html = render(lv)
+      refute html =~ ~s(role="dialog")
+      refute html =~ "embed=1"
+    end
+
     test "an unknown open mode falls back to the overlay", %{conn: conn, me: me} do
       board!(me, "Q3 plan")
       {:ok, _lv, html} = mount_panel(conn, me, open: :sideways)
@@ -1162,7 +1177,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       assert fire(lv, "export_pdf", %{"id" => board.uuid}) =~ "panel-export-1-host"
       refute render(lv) =~ "panel-export-2"
 
-      html = fire(lv, "export_done", %{"ok" => true})
+      html = fire(lv, "export_done", %{"ok" => true, "seq" => "1"})
       refute html =~ ~s(phx-hook="BoardsPanelExport")
       refute html =~ "Exporting"
       refute html =~ "Could not export"
@@ -1173,9 +1188,41 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       {:ok, lv, _html} = mount_panel(conn, me)
 
       fire(lv, "export_pdf", %{"id" => board.uuid})
-      html = fire(lv, "export_done", %{"ok" => false, "reason" => "timeout"})
+      html = fire(lv, "export_done", %{"ok" => false, "seq" => "1", "reason" => "timeout"})
       assert html =~ "Could not export the board as a PDF."
       refute html =~ ~s(phx-hook="BoardsPanelExport")
+    end
+
+    # The watchdog gave up on export 1 and export 2 began; export 1's late
+    # answer must not take export 2 down.
+    test "a late answer from an earlier export is ignored", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      fire(lv, "export_pdf", %{"id" => board.uuid})
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel, id: "panel", export_timeout: 1)
+      assert render(lv) =~ "Could not export the board as a PDF."
+
+      assert fire(lv, "export_pdf", %{"id" => board.uuid}) =~ "panel-export-2-host"
+      assert fire(lv, "export_done", %{"ok" => true, "seq" => "1"}) =~ "panel-export-2-host"
+      refute fire(lv, "export_done", %{"ok" => true, "seq" => "2"}) =~ "BoardsPanelExport"
+    end
+
+    # A browser that never reports (the hook did not load) must not leave
+    # "Export as PDF" disabled for as long as the page is open.
+    test "the server gives up on an export the browser never answers", %{conn: conn, me: me} do
+      board = board!(me, "Q3 plan")
+      {:ok, lv, _html} = mount_panel(conn, me)
+
+      fire(lv, "export_pdf", %{"id" => board.uuid})
+      # A stale watchdog, for an export that is not this one, changes nothing.
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel, id: "panel", export_timeout: 7)
+      assert render(lv) =~ "panel-export-1-host"
+
+      Phoenix.LiveView.send_update(lv.pid, BoardsPanel, id: "panel", export_timeout: 1)
+      html = render(lv)
+      refute html =~ "BoardsPanelExport"
+      assert html =~ "Could not export the board as a PDF."
     end
 
     test "someone else's private board, or another place's, is not drawn", %{

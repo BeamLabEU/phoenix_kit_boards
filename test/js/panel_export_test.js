@@ -27,7 +27,7 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
   };
   const sent = [];
   const hook = Object.create(hookDef);
-  hook.el = { dataset: { frescoId: "panel-export-1", filename: "Q3 plan" } };
+  hook.el = { dataset: { frescoId: "panel-export-1", filename: "Q3 plan", seq: "1" } };
   hook.pushEventTo = (_t, name, payload) => sent.push({ name, payload });
   return { hook, sent, calls };
 }
@@ -41,7 +41,7 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
     assert.deepStrictEqual(w.calls, [], "not before the shapes are drawn");
     await tick(400);
     assert.deepStrictEqual(w.calls, [{ filename: "Q3 plan" }]);
-    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: true, reason: null } }]);
+    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: true, seq: "1", reason: null } }]);
     w.hook.destroyed();
   }
 
@@ -50,7 +50,7 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
     const w = world({ exportPdf: () => Promise.reject(new Error("tainted")) });
     w.hook.mounted();
     await tick(200);
-    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: false, reason: "tainted" } }]);
+    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: false, seq: "1", reason: "tainted" } }]);
     w.hook.destroyed();
   }
 
@@ -58,7 +58,7 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
   {
     const w = world({ noFresco: true });
     w.hook.mounted();
-    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: false, reason: "viewer not loaded" } }]);
+    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: false, seq: "1", reason: "viewer not loaded" } }]);
     w.hook.destroyed();
   }
 
@@ -68,8 +68,20 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
     global.window.Fresco.onReady = (_id, cb) => cb({});
     w.hook.mounted();
     await tick(50);
-    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: false, reason: "this viewer cannot export" } }]);
+    assert.deepStrictEqual(w.sent, [{ name: "export_done", payload: { ok: false, seq: "1", reason: "this viewer cannot export" } }]);
     w.hook.destroyed();
+  }
+
+  // Taken down before the layer was ready: it stops waiting and never
+  // reports, so a late answer cannot land on the export after it.
+  {
+    const w = world({ layerReadyAfter: 300 });
+    w.hook.mounted();
+    await tick(100);
+    w.hook.destroyed();
+    await tick(400);
+    assert.deepStrictEqual(w.calls, [], "no export after it was taken down");
+    assert.deepStrictEqual(w.sent, [], "no report after it was taken down");
   }
 
   console.log("Panel export: all checks passed");

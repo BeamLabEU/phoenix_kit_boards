@@ -14,13 +14,16 @@
       var self = this;
       var frescoId = el.dataset.frescoId;
       var filename = el.dataset.filename || "board";
-      var done = false;
+      var seq = el.dataset.seq || null;
+      self.done = false;
 
+      // `self.done` rather than a local: `destroyed` sets it too, so a copy
+      // taken down before it was ready stops polling and never reports.
       function finish(ok, reason) {
-        if (done) return;
-        done = true;
+        if (self.done) return;
+        self.done = true;
         clearTimeout(self.giveUp);
-        self.pushEventTo(el, "export_done", { ok: ok, reason: reason || null });
+        self.pushEventTo(el, "export_done", { ok: ok, seq: seq, reason: reason || null });
       }
 
       this.giveUp = setTimeout(function () { finish(false, "timeout"); }, GIVE_UP_MS);
@@ -36,7 +39,7 @@
           return;
         }
         (function wait() {
-          if (done) return;
+          if (self.done) return;
           var layer = window.Etcher && typeof window.Etcher.layerFor === "function"
             ? window.Etcher.layerFor(frescoId) : null;
           if (!layer || (typeof layer.isReady === "function" && !layer.isReady())) {
@@ -57,6 +60,7 @@
     },
 
     destroyed() {
+      this.done = true;
       clearTimeout(this.giveUp);
     }
   };

@@ -41,12 +41,12 @@ mix quality.ci              # format --check-formatted + credo --strict + dialyz
 This is a **library** (not a standalone Phoenix app) — no `config/`, endpoint,
 or router of its own.
 
-- `phoenix_kit` (`>= 3.5.0 and < 4.0.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
+- `phoenix_kit` (`>= 3.6.0 and < 4.0.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
 - `gettext` (`~> 1.0`) — `PhoenixKitBoards.Gettext`, the backend that translates the
   permission labels in the admin matrix
-- `fresco` (`>= 0.13.1 and < 1.0.0`) — the infinite-canvas engine and `Fresco.Canvas` document
-- `etcher` (`~> 0.18`) — the annotation/drawing layer over the canvas
+- `fresco` (`>= 0.16.0 and < 1.0.0`) — the infinite-canvas engine and `Fresco.Canvas` document
+- `etcher` (`~> 0.25`) — the annotation/drawing layer over the canvas
 - `req` (`~> 0.5`) — fetches the page behind a pasted link
 - `floki` (`>= 0.34.0`) — reads its OpenGraph tags
 - `open_fresco` (`~> 0.2`) — lays the preview card out and emits it as SVG
@@ -56,7 +56,8 @@ or router of its own.
 module calls things core never does and an older release would degrade rather
 than fail — `setImageUploader` / `setLinkUnfurler` (0.10), `onShapesMoving` /
 `toolBadge` (0.11), `onDrawing` / `applyDrawing` (etcher 0.18), and a second
-finger that pinches rather than feeding the stroke (fresco 0.13.1). Narrower is still compatible — a two-part `~>` runs to the
+finger that pinches rather than feeding the stroke (fresco 0.13.1), PDF export and
+the viewer's bar nav (fresco 0.16, etcher 0.25). Narrower is still compatible — a two-part `~>` runs to the
 next major, so core admits everything this asks for. **Core loading the JS is
 also why this module needs no host JS setup:** `fresco.js` and `etcher.js` are
 already there, so `<Fresco.canvas>` and `<Etcher.layer>` work out of the box.

@@ -47,6 +47,18 @@ defmodule PhoenixKitBoards.PathsTest do
     end
   end
 
+  describe "embedded_gone/1" do
+    test "the same frame, told the board is gone" do
+      assert Paths.embedded_gone("abc") =~ ~r{/dashboard/boards/abc\?embed=1&gone=1$}
+    end
+
+    # The id is whatever the address held.
+    test "encodes what it is given" do
+      assert Paths.embedded_gone("a b/../c?x") =~
+               ~r{/dashboard/boards/a%20b%2F..%2Fc%3Fx\?embed=1&gone=1$}
+    end
+  end
+
   describe "user_board/2" do
     test "links to the dashboard board page" do
       assert Paths.user_board("abc") =~ "/dashboard/boards/abc"

@@ -388,6 +388,51 @@ defmodule PhoenixKitBoards.Integration.BoardAccessLifecycleTest do
     end
   end
 
+  # The board page inside the boards widget's overlay (`?embed=1`). It has no
+  # host page to go back to, and no layout to show a flash in.
+  describe "the embedded board page" do
+    @embed %{"params" => %{"embed" => "1"}}
+
+    test "has no back arrow and shows its own flashes", ctx do
+      {:ok, _lv, html} = open(ctx.board, ctx.owner, @embed)
+      assert html =~ "board-root"
+      refute html =~ ~s(aria-label="Back to boards")
+      assert html =~ ~s(id="board-flash")
+    end
+
+    test "the page on its own keeps the back arrow and the host's flashes", ctx do
+      {:ok, _lv, html} = open(ctx.board, ctx.owner)
+      assert html =~ ~s(aria-label="Back to boards")
+      refute html =~ ~s(id="board-flash")
+    end
+
+    test "a board it may not open stays in the frame as not found", ctx do
+      Application.put_env(:phoenix_kit_boards, :authorize, {Deny, :can?})
+      gone = PhoenixKitBoards.Paths.embedded_gone(ctx.board.uuid)
+
+      assert {:error, {:redirect, %{to: ^gone}}} = open(ctx.board, ctx.other, @embed)
+    end
+
+    test "deleting the board while it is open leaves the frame, not to the site root", ctx do
+      {:ok, lv, _} = open(ctx.board, ctx.other, @embed)
+      {:ok, _} = Boards.delete_board(ctx.board)
+      assert_redirect(lv, PhoenixKitBoards.Paths.embedded_gone(ctx.board.uuid))
+    end
+
+    test "the not-found frame loads nothing and says so", ctx do
+      {:ok, _lv, html} =
+        open(ctx.board, ctx.owner, %{"params" => %{"embed" => "1", "gone" => "1"}})
+
+      assert html =~ "Board not found."
+      refute html =~ "board-root"
+    end
+
+    test "`gone` means nothing to the page on its own", ctx do
+      {:ok, _lv, html} = open(ctx.board, ctx.owner, %{"params" => %{"gone" => "1"}})
+      assert html =~ "board-root"
+    end
+  end
+
   describe "opening a board that still carries embedded images" do
     @png "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 

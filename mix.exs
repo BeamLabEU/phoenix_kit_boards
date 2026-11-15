@@ -61,11 +61,16 @@ defmodule PhoenixKitBoards.MixProject do
 
   defp deps do
     [
-      # Floor 3.5.0, the ecosystem-wide minimum core. The ceiling is open
-      # through core 3.x. The core APIs this module calls (`SchemaPrefix`,
-      # `Storage.ResourceFolders`, `Scope.can?/2`, ...) are unguarded, so a core
-      # without one is a compile or runtime error in the host.
-      pk_dep(:phoenix_kit, ">= 3.5.0 and < 4.0.0"),
+      # Floor 3.6.0. 3.5.0 is the ecosystem-wide minimum core, but it pins
+      # `fresco ~> 0.15.0` / `etcher ~> 0.24.0`, which cannot sit next to the
+      # fresco 0.16 / etcher 0.25 this module needs below. A floor that admits
+      # it promises a combination no host can resolve. 3.6.0 is the first core
+      # that allows them, and it serves etcher 0.26's JS, which the laser
+      # measure needs. The ceiling is open through core 3.x. The core APIs
+      # this module calls (`SchemaPrefix`, `Storage.ResourceFolders`,
+      # `Scope.can?/2`, ...) are unguarded, so a core without one is a compile
+      # or runtime error in the host.
+      pk_dep(:phoenix_kit, ">= 3.6.0 and < 4.0.0"),
       {:phoenix_live_view, "~> 1.1"},
       # The label and description of `boards.manage` in the admin permissions
       # matrix are translated through this module's own backend.

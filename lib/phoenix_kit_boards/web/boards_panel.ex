@@ -109,6 +109,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   @default_limit 11
   @show_all_limit 500
   @default_poll 5_000
+  @export_timeout_ms 45_000
   @all_actions [:empty, :text, :image]
   @image_accept ~w(.png .jpg .jpeg .gif .webp image/png image/jpeg image/gif image/webp)
   @image_max_bytes 25_000_000
@@ -153,6 +154,21 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   # One chain of timers per widget: a tick clears the flag and re-arms, and a
   # host re-render in between finds it set and does not start a second chain.
+  # The export's own watchdog, in case the browser never reports back (the
+  # hook failed to load, or the page threw before it could). The script gives
+  # up after 30 s; this is the server's later backstop, so the tile's
+  # "Export as PDF" is never disabled for good. Only the export it was armed
+  # for: a newer one has its own.
+  def update(%{export_timeout: seq}, socket) do
+    case socket.assigns[:exporting] do
+      %{seq: ^seq} ->
+        {:ok, socket |> assign(:exporting, nil) |> fail("Could not export the board as a PDF.")}
+
+      _ ->
+        {:ok, socket}
+    end
+  end
+
   def update(%{tick: true}, socket) do
     {:ok, socket |> assign(:timer_armed?, false) |> load() |> arm_timer()}
   end
@@ -223,6 +239,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
       renaming: nil,
       error: nil,
       created: nil,
+      # The open board and an export in progress belong to the old place or
+      # user: close them rather than leave them over the new one.
+      viewing: nil,
+      exporting: nil,
       visibility: socket.assigns.default_visibility
     )
   end
@@ -569,11 +589,18 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
          %{} = board <- Boards.get_board(board.uuid) do
       seq = socket.assigns.export_seq + 1
 
+      Phoenix.LiveView.send_update_after(
+        __MODULE__,
+        [id: socket.assigns.id, export_timeout: seq],
+        @export_timeout_ms
+      )
+
       {:noreply,
        socket
        |> assign(:export_seq, seq)
        |> assign(:error, nil)
        |> assign(:exporting, %{
+         seq: seq,
          id: board.uuid,
          name: board.name,
          canvas: Boards.load_canvas(board),
@@ -585,12 +612,18 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end
   end
 
+  # Only the export the browser is reporting on: a late answer from one the
+  # watchdog already gave up on must not end the export that replaced it.
   def handle_event("export_done", params, socket) do
-    socket = assign(socket, :exporting, nil)
+    if current_export?(socket.assigns.exporting, params["seq"]) do
+      socket = assign(socket, :exporting, nil)
 
-    if params["ok"] == true,
-      do: {:noreply, socket},
-      else: {:noreply, fail(socket, "Could not export the board as a PDF.")}
+      if params["ok"] == true,
+        do: {:noreply, socket},
+        else: {:noreply, fail(socket, "Could not export the board as a PDF.")}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event(_event, _params, socket), do: {:noreply, socket}
@@ -774,6 +807,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     end
   end
 
+  # The browser reports the sequence number from a data attribute, a string.
+  defp current_export?(%{seq: seq}, reported), do: reported in [seq, Integer.to_string(seq)]
+  defp current_export?(_exporting, _reported), do: false
+
   defp open_mode(mode) when mode in [:navigate, :new_tab, :overlay], do: mode
   defp open_mode(_), do: :overlay
 
@@ -935,6 +972,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
         phx-update="ignore"
         data-fresco-id={@exporting.fresco_id}
         data-filename={@exporting.name}
+        data-seq={@exporting.seq}
         aria-hidden="true"
         inert
         style="position: fixed; left: -20000px; top: 0; width: 1600px; height: 1000px; pointer-events: none; overflow: hidden;"

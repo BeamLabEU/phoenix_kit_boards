@@ -38,6 +38,16 @@ defmodule PhoenixKitBoards.Paths do
   def embedded_board(id), do: Routes.path("/dashboard/boards/#{id}") <> "?embed=1"
 
   @doc """
+  Where the embedded board page goes when its board is missing or no longer
+  open to the viewer: the same frame, showing "Board not found." and loading
+  nothing. `id` is whatever the address held, so it is encoded.
+  """
+  def embedded_gone(id),
+    do:
+      Routes.path("/dashboard/boards/#{URI.encode(to_string(id), &URI.char_unreserved?/1)}") <>
+        "?embed=1&gone=1"
+
+  @doc """
   `path` when it is a path on this site, else `nil`.
 
   A `return_to` is attacker-controlled, so a back link built from it must not

@@ -117,9 +117,14 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     # button and frame. No host layout around it, no back arrow, and the page
     # fills the frame.
     embedded? = socket.assigns[:live_action] == :user and params["embed"] == "1"
-    socket = assign(socket, :embedded?, embedded?)
+    socket = assign(socket, embedded?: embedded?, gone?: false)
 
-    case do_mount(params, session, socket) do
+    result =
+      if embedded? and params["gone"] == "1",
+        do: {:ok, assign(socket, board: nil, gone?: true)},
+        else: do_mount(params, session, socket)
+
+    case result do
       {:ok, socket} when embedded? -> {:ok, socket, layout: false}
       other -> other
     end
@@ -129,7 +134,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     # Where the back arrow goes. Admins come from the boards list; a signed-in
     # user comes from the page that embedded the panel, which it says in
     # `return_to` — validated, since a query parameter is anyone's to write.
-    socket = assign(socket, :back_to, back_to(socket.assigns[:live_action], params))
+    socket =
+      socket
+      |> assign(:back_to, back_to(socket.assigns[:live_action], params))
+      |> assign(:route_id, id)
 
     # LiveView mounts twice — once for the HTTP render, once on WebSocket
     # connect — so anything done unconditionally here runs twice. The
@@ -206,13 +214,26 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # One answer for "there is no such board" and "you may not see it": telling
   # them apart would confirm that someone's private board exists.
   defp not_found(socket) do
-    socket = put_flash(socket, :error, "Board not found.")
+    cond do
+      # Inside the widget's overlay there is no host page to go back to: the
+      # frame would load the site root inside the overlay. It reloads as an
+      # empty "not found" page instead. A full redirect still ends this
+      # process, and with it the board's channel.
+      socket.assigns[:embedded?] ->
+        {:ok, redirect(socket, to: Paths.embedded_gone(socket.assigns.route_id))}
 
-    # The user route sends people back to a host page, which is in another
-    # live_session; `push_navigate` would be refused and logged.
-    if socket.assigns[:live_action] == :user,
-      do: {:ok, redirect(socket, to: socket.assigns.back_to)},
-      else: {:ok, push_navigate(socket, to: socket.assigns.back_to)}
+      # The user route sends people back to a host page, which is in another
+      # live_session; `push_navigate` would be refused and logged.
+      socket.assigns[:live_action] == :user ->
+        {:ok,
+         socket |> put_flash(:error, "Board not found.") |> redirect(to: socket.assigns.back_to)}
+
+      true ->
+        {:ok,
+         socket
+         |> put_flash(:error, "Board not found.")
+         |> push_navigate(to: socket.assigns.back_to)}
+    end
   end
 
   # The site root, not `/dashboard`: whether the host has a user dashboard at
@@ -1430,7 +1451,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       "flex items-center justify-center",
       if(@embedded?, do: "h-dvh", else: "h-[calc(100vh-8rem)] min-h-[520px]")
     ]}>
-      <span class="loading loading-spinner loading-lg text-base-content/40"></span>
+      <p :if={@gone?} role="alert" class="text-sm text-base-content/60">Board not found.</p>
+      <span :if={not @gone?} class="loading loading-spinner loading-lg text-base-content/40"></span>
     </div>
     """
   end
@@ -1451,6 +1473,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
       callout has to be named separately — a long press raises it through
       `user-select: none`.
     --%>
+    <%!-- `layout: false` drops the layout that shows flashes, and a save that
+          failed must still say so inside the widget's overlay. Outside the
+          column, so its empty wrapper takes no gap. --%>
+    <.flash_group :if={@embedded?} flash={@flash} id="board-flash" />
     <div class={[
       "flex flex-col gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
       if(@embedded?,

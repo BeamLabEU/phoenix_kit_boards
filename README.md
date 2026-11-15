@@ -96,6 +96,21 @@ moduledoc; the ones you will reach for:
 Boards opened from the widget open at `/dashboard/boards/:id` (so people without
 `boards.manage` can open them) and link back to `return_to`.
 
+The overlay frames that same page (`?embed=1`) in an `<iframe>` from your own
+origin. Phoenix's default `put_secure_browser_headers` (`x-frame-options:
+SAMEORIGIN`) allows that. A Content-Security-Policy with `frame-ancestors 'none'`
+or a `frame-src` that leaves out `'self'` does not, and the overlay then shows
+an empty frame. Relax the policy or pass `open={:navigate}`.
+
+Every tile's menu also has **Export as PDF**. The board is drawn off screen with
+the same viewer as the board page and handed to Fresco's PDF export, so the
+host needs nothing extra.
+
+The **laser measure** (Etcher's Bluetooth laser meter tool) is opt-in, with
+the same switch as PhoenixKit's media viewer: `config :phoenix_kit,
+laser_measure: true`. Only while it is on does the overlay's frame get the
+`bluetooth` permission.
+
 ### Permissions
 
 Two keys, in the admin's permissions matrix:
@@ -231,7 +246,7 @@ end
 
 ## Requirements
 
-- `phoenix_kit >= 3.5.0 and < 4.0.0`, `fresco ~> 0.11`, `etcher ~> 0.11` (all resolved by the
+- `phoenix_kit >= 3.6.0 and < 4.0.0`, `fresco >= 0.16.0 and < 1.0.0`, `etcher ~> 0.25` (all resolved by the
   host — this module references their components and reuses their loaded JS).
 - **PhoenixKit's Storage module, with at least one bucket enabled**, if you
   want pasted images to be uploaded rather than embedded. Without it every

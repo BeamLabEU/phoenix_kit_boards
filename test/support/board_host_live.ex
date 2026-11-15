@@ -17,7 +17,13 @@ defmodule PhoenixKitBoards.Test.BoardHostLive do
         live_action: :user
       )
 
-    BoardLive.mount(%{"id" => session["board_uuid"], "return_to" => "/projects"}, session, socket)
+    params =
+      Map.merge(
+        %{"id" => session["board_uuid"], "return_to" => "/projects"},
+        session["params"] || %{}
+      )
+
+    BoardLive.mount(params, session, socket)
   end
 
   # `"snapshot"`: the page holds the scope core's on_mount would have built, as

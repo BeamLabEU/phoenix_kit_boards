@@ -19,6 +19,15 @@ defmodule PhoenixKitBoards.Test.HostLive do
     {:ok, assign(socket, user: user, opts: session["opts"] || [])}
   end
 
+  # The host moving the widget to another place (or changing any option)
+  # while it stays mounted, as a page navigating within its LiveView would.
+  @impl true
+  def handle_info({:set_opts, opts}, socket),
+    do: {:noreply, assign(socket, :opts, Keyword.merge(socket.assigns.opts, opts))}
+
+  # Anything else (e.g. `:host_rerender`) is a re-render and nothing more.
+  def handle_info(_message, socket), do: {:noreply, socket}
+
   @impl true
   def render(assigns) do
     ~H"""

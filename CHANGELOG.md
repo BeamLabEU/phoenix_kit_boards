@@ -4,6 +4,62 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+Needs **phoenix_kit 3.6.0** or later, the first core that admits fresco 0.16
+and etcher 0.25.
+
+### Changed (breaking)
+
+- **Two permissions: `boards` for users, `boards.manage` for admins.** The base
+  `boards` key now covers the widget and `/dashboard/boards/:id`, where your
+  `:authorize` hook still decides which places. The new `boards.manage`
+  sub-key covers `/admin/boards` and every board in every place, and the hook
+  is not asked. On the first boot with the module enabled, every role that
+  held `boards` is also given `boards.manage`, so nobody loses the admin
+  pages. The `boards_manage_backfilled` setting records that this ran.
+  **Users with no `boards` permission lose the widget and the board page**,
+  which used to need no permission at all. Grant them the base key.
+- **The widget opens boards over the page by default** (`open: :overlay`). It
+  frames the board page in an `<iframe>` with a close button and an
+  open-in-new-tab link, and leaves the person where they were. A host whose
+  Content-Security-Policy forbids framing its own pages
+  (`frame-ancestors 'none'`) gets an empty overlay. Pass `open={:navigate}`
+  for the old behaviour.
+- The `phoenix_kit` floor is now 3.6.0, and fresco 0.16 / etcher 0.25 are the
+  new minimums.
+
+### Added
+
+- **Export as PDF** on the board page and in every tile's menu. From a tile,
+  the board is drawn off screen with the board page's own viewer, exported,
+  and taken down again.
+- **The board page uses the media viewer's controls:** one dark nav bar,
+  Etcher's View | Annotate switch, the zoom readout and slider, and the 1:1
+  button.
+- **Laser measure**, opt-in with `config :phoenix_kit, laser_measure: true`
+  (the same switch as PhoenixKit's media viewer): a Bosch meter's readings
+  become shape labels. Only while it is on does the overlay's frame get the
+  `bluetooth` permission.
+- The `boards.manage` label and description are translated (en, et, ru).
+
+### Fixed
+
+- **The first click on an empty widget was lost.** The "Paste text or an
+  image" hint appeared on focus and moved the buttons between mousedown and
+  mouseup, so the click missed them.
+- **The overlay no longer loads the site's home page.** That happened when the
+  open board was deleted, made private or closed to the viewer. The frame now
+  says "Board not found." and loads nothing.
+- **A failed save now shows in the overlay.** The framed page has no host
+  layout, so its "Could not save the board." message was never shown.
+- **"Export as PDF" no longer stays disabled for good** when the browser never
+  answers (the export script failed to load). The server gives up after 45
+  seconds, a late answer from an abandoned export can't end the next one, and
+  an export taken down early stops polling for the drawing layer.
+- **Moving the widget to another place closes an open board and cancels an
+  export**, instead of leaving the old place's board over the new one.
+
 ## 0.7.0 - 2026-11-11
 
 Includes everything listed under 0.6.0, which was never published to Hex.
