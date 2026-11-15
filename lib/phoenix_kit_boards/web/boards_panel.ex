@@ -137,6 +137,10 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   @external_resource @export_js
   @export_hook File.read!(@export_js)
 
+  @viewer_js Path.expand("../../../priv/static/assets/boards_panel_viewer.js", __DIR__)
+  @external_resource @viewer_js
+  @viewer_hook File.read!(@viewer_js)
+
   @doc """
   Re-read the widget with the given `id` now. Call from the host LiveView, e.g.
   when it hears `{:boards_scope_changed, _}` (see the moduledoc).
@@ -237,6 +241,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
     socket
     |> clear_capture(socket.assigns[:can_create?] == true and not can_create?)
+    |> clear_viewer(not can_view?)
     |> assign(:can_view?, can_view?)
     |> assign(:can_create?, can_create?)
     # The menu reads this. Clicks ask `admin?/1` again; the menu has to move
@@ -270,6 +275,11 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   end
 
   defp clear_capture(socket, false), do: socket
+
+  # Hidden components keep their assigns. Forget these when access is lost,
+  # or restoring permission would reopen an old frame and restart an export.
+  defp clear_viewer(socket, true), do: assign(socket, viewing: nil, exporting: nil)
+  defp clear_viewer(socket, false), do: socket
 
   defp constrain_visibility(socket) do
     if socket.assigns[:visibility] in socket.assigns.visibility_options,
@@ -599,31 +609,31 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     do: {:noreply, socket}
 
   def handle_event("export_pdf", %{"id" => id}, socket) do
-    with {:ok, board} <- visible_board(socket, id),
-         %{} = board <- Boards.get_board(board.uuid) do
-      seq = socket.assigns.export_seq + 1
+    case visible_board(socket, id, include_data: true) do
+      {:ok, board} ->
+        seq = socket.assigns.export_seq + 1
 
-      Phoenix.LiveView.send_update_after(
-        __MODULE__,
-        [id: socket.assigns.id, export_timeout: seq, export_phase: :wait],
-        @export_wait_timeout_ms
-      )
+        Phoenix.LiveView.send_update_after(
+          __MODULE__,
+          [id: socket.assigns.id, export_timeout: seq, export_phase: :wait],
+          @export_wait_timeout_ms
+        )
 
-      {:noreply,
-       socket
-       |> assign(:export_seq, seq)
-       |> assign(:error, nil)
-       |> assign(:exporting, %{
-         seq: seq,
-         phase: :wait,
-         id: board.uuid,
-         name: board.name,
-         canvas: Boards.load_canvas(board),
-         fresco_id: "#{socket.assigns.id}-export-#{seq}"
-       })}
-    else
-      nil -> {:noreply, refuse(socket, {:error, :gone})}
-      error -> {:noreply, refuse(socket, error)}
+        {:noreply,
+         socket
+         |> assign(:export_seq, seq)
+         |> assign(:error, nil)
+         |> assign(:exporting, %{
+           seq: seq,
+           phase: :wait,
+           id: board.uuid,
+           name: board.name,
+           canvas: Boards.load_canvas(board),
+           fresco_id: "#{socket.assigns.id}-export-#{seq}"
+         })}
+
+      error ->
+        {:noreply, refuse(socket, error)}
     end
   end
 
@@ -803,12 +813,12 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   # The board the browser named, only if it is in THIS widget's place and the
   # user may see it. An id from anywhere else is as good as none.
-  defp visible_board(%{assigns: assigns}, id) do
+  defp visible_board(%{assigns: assigns}, id, opts \\ [include_data: false]) do
     phoenix_scope = if assigns.scope_ok?, do: scope_of_user(assigns.user)
 
     with true <-
            assigns.scope_ok? and Access.can_list?(assigns.user, assigns.scope, phoenix_scope),
-         board when not is_nil(board) <- Boards.get_board(id, include_data: false) do
+         board when not is_nil(board) <- Boards.get_board(id, opts) do
       if Boards.scope_of(board) == assigns.scope and
            Boards.visible_to?(board, assigns.user_uuid),
          do: {:ok, board},
@@ -969,6 +979,9 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
             form (`?embed=1`), framed — the same viewer, live collaboration,
             uploads and export, under the same access rules as opening it on
             its own. Escape or the ✕ closes it. --%>
+      <script :if={@viewing} data-phx-runtime-hook="BoardsPanelViewer" nonce={@script_nonce}>
+        <%= Phoenix.HTML.raw("window.phx_hook_BoardsPanelViewer = function () { return " <> viewer_hook() <> "; };") %>
+      </script>
       <div
         :if={@viewing}
         id={"#{@id}-viewer"}
@@ -1007,6 +1020,8 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
           </div>
           <iframe
             id={"#{@id}-viewer-#{@viewing.id}"}
+            phx-hook="BoardsPanelViewer"
+            phx-target={@myself}
             src={@viewing.src}
             title={@viewing.name}
             class="min-h-0 w-full flex-1 border-0"
@@ -1098,6 +1113,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
 
   defp paste_hook, do: @paste_hook
   defp export_hook, do: @export_hook
+  defp viewer_hook, do: @viewer_hook
 
   # ── The new-board tile ─────────────────────────────────────────────────
 

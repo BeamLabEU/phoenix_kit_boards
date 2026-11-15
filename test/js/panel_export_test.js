@@ -15,6 +15,13 @@ const src = fs.readFileSync(
 const hookDef = eval(src);
 
 global.requestAnimationFrame = (f) => setTimeout(f, 0);
+// Object URL cleanup should not keep this Node process alive.
+const browserSetTimeout = global.setTimeout;
+global.setTimeout = (fn, ms, ...args) => {
+  const timer = browserSetTimeout(fn, ms, ...args);
+  if (ms === 30000) timer.unref();
+  return timer;
+};
 const tick = (ms) => new Promise((r) => setTimeout(r, ms || 0));
 
 function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
@@ -31,11 +38,21 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
     Fresco: { onReady: (id, cb) => { assert.strictEqual(id, "panel-export-1"); setTimeout(() => cb(handle), 0); } },
     Etcher: { layerFor: () => ({ isReady: () => Date.now() >= readyAt }) }
   };
+  const downloads = [];
+  global.URL = { createObjectURL: () => "blob:pdf", revokeObjectURL: () => {} };
+  global.document = {
+    body: { appendChild: () => {} },
+    createElement: () => ({
+      style: {},
+      click() { downloads.push({ filename: this.download, href: this.href }); },
+      remove() {}
+    })
+  };
   const sent = [];
   const hook = Object.create(hookDef);
   hook.el = { dataset: { frescoId: "panel-export-1", filename: "Q3 plan", seq: "1" } };
   hook.pushEventTo = (_t, name, payload) => sent.push({ name, payload });
-  return { hook, sent, calls };
+  return { hook, sent, calls, downloads };
 }
 
 (async function () {
@@ -46,12 +63,28 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
     await tick(100);
     assert.deepStrictEqual(w.calls, [], "not before the shapes are drawn");
     await tick(400);
-    assert.deepStrictEqual(w.calls, [{ filename: "Q3 plan.pdf" }]);
+    assert.deepStrictEqual(w.calls, [{ filename: "Q3 plan.pdf", download: false }]);
     assert.deepStrictEqual(w.sent, [
       { name: "export_started", payload: { seq: "1" } },
       { name: "export_done", payload: { ok: true, seq: "1", reason: null } }
     ]);
+    assert.deepStrictEqual(w.downloads, [{ filename: "Q3 plan.pdf", href: "blob:pdf" }]);
     w.hook.destroyed();
+  }
+
+  // Rasterisation may finish after the host has timed out or changed place.
+  // Fresco returns the blob without downloading; only a live hook saves it.
+  {
+    let resolve;
+    const w = world({ exportPdf: () => new Promise((r) => { resolve = r; }) });
+    w.hook.mounted();
+    await tick(50);
+    assert.deepStrictEqual(w.calls, [{ filename: "Q3 plan.pdf", download: false }]);
+    w.hook.destroyed();
+    resolve({});
+    await tick();
+    assert.deepStrictEqual(w.downloads, [], "no download after the export was taken down");
+    assert.deepStrictEqual(w.sent.map((s) => s.name), ["export_started"]);
   }
 
   // A failed export is reported, once.
@@ -159,7 +192,7 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
       assert.strictEqual(long.length, 1);
       assert.ok(cleared.includes(long[0]), "the 30s give-up is cleared once export starts");
       assert.deepStrictEqual(w.sent.map((s) => s.name), ["export_started"]);
-      assert.deepStrictEqual(w.calls, [{ filename: "Q3 plan.pdf" }]);
+      assert.deepStrictEqual(w.calls, [{ filename: "Q3 plan.pdf", download: false }]);
       w.hook.destroyed();
     } finally {
       global.setTimeout = realSet;
@@ -198,7 +231,7 @@ function world({ exportPdf, layerReadyAfter = 0, noFresco = false } = {}) {
       w.hook.el.dataset.filename = raw;
       w.hook.mounted();
       await tick(20);
-      assert.deepStrictEqual(w.calls, [{ filename: expected }], raw);
+      assert.deepStrictEqual(w.calls, [{ filename: expected, download: false }], raw);
       w.hook.destroyed();
     }
   }

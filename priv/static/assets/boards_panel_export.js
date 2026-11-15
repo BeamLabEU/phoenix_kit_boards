@@ -78,13 +78,35 @@
               self.pushEventTo(el, "export_started", { seq: seq });
               var pending;
               try {
-                pending = handle.exportPdf({ filename: filename });
+                // Fresco must not download on its own: the host can be
+                // removed while rasterisation is running (timeout, navigation
+                // or a change of place). Only a still-mounted export saves it.
+                pending = handle.exportPdf({ filename: filename, download: false });
               } catch (err) {
                 finish(false, String((err && err.message) || err));
                 return;
               }
               Promise.resolve(pending).then(
-                function () { finish(true); },
+                function (blob) {
+                  if (self.done) return;
+                  var url;
+                  var link;
+                  try {
+                    url = URL.createObjectURL(blob);
+                    link = document.createElement("a");
+                    link.href = url;
+                    link.download = filename;
+                    link.style.display = "none";
+                    document.body.appendChild(link);
+                    link.click();
+                    finish(true);
+                  } catch (err) {
+                    finish(false, String((err && err.message) || err));
+                  } finally {
+                    if (link) link.remove();
+                    if (url) setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+                  }
+                },
                 function (err) { finish(false, String((err && err.message) || err)); }
               );
             });

@@ -1111,6 +1111,7 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
       html = fire(lv, "open_board", %{"id" => board.uuid})
       assert html =~ ~s(role="dialog")
       assert html =~ ~s(src="#{PhoenixKitBoards.Paths.embedded_board(board.uuid)}")
+      assert has_element?(lv, "iframe[phx-hook=BoardsPanelViewer]")
       assert html =~ "Q3 plan"
       # Bluetooth is delegated to the frame only while the host has the laser
       # measure on (`PhoenixKitBoards.LaserMeasureToolsTest`); by default not.
@@ -1173,6 +1174,29 @@ defmodule PhoenixKitBoards.Integration.BoardsPanelTest do
   end
 
   describe "export as PDF" do
+    test "revoked access forgets the open board and export even if permission returns", %{
+      conn: conn,
+      me: me
+    } do
+      board = board!(me, "Before revocation")
+      {:ok, lv, _} = mount_panel(conn, me)
+      fire(lv, "open_board", %{"id" => board.uuid})
+      fire(lv, "export_pdf", %{"id" => board.uuid})
+      assert has_element?(lv, "iframe")
+      assert has_element?(lv, "#panel-export-1-host")
+
+      revoke_boards(me)
+      BoardsPanel.refresh("panel", lv.pid)
+      refute render(lv) =~ "Before revocation"
+
+      grant_boards(me)
+      BoardsPanel.refresh("panel", lv.pid)
+      assert render(lv) =~ "Before revocation"
+      refute has_element?(lv, "iframe")
+      refute has_element?(lv, "#panel-export-1-host")
+      assert fire(lv, "export_pdf", %{"id" => board.uuid}) =~ "panel-export-2-host"
+    end
+
     test "every tile offers it", %{conn: conn, me: me} do
       board!(me, "Q3 plan")
       {:ok, _lv, html} = mount_panel(conn, me)
