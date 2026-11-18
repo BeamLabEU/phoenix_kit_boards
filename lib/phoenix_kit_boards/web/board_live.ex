@@ -26,6 +26,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
   alias PhoenixKit.Users.Auth.User
+  alias PhoenixKit.Utils.Routes
   alias PhoenixKitBoards.{Access, Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
   alias PhoenixKitBoards.Web.RuntimeHooks
@@ -107,6 +108,26 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   """
   @spec laser_measure?() :: boolean()
   def laser_measure?, do: Application.get_env(:phoenix_kit, :laser_measure, false) == true
+
+  @doc """
+  Whether boards work offline (`config :phoenix_kit, offline_annotations:
+  true`). Off by default; only a literal `true` turns it on.
+
+  On, the board's edits are also kept in the browser and sent when the
+  connection is back, and a service worker keeps the page so it opens with no
+  connection (Etcher's `offline` mode).
+  """
+  @spec offline?() :: boolean()
+  def offline?, do: Application.get_env(:phoenix_kit, :offline_annotations, false) == true
+
+  @doc """
+  URL of Etcher's offline service worker, as this module serves it.
+
+  The same on every page, whatever the language: a site has one worker, and
+  registering it under a second URL replaces the first registration.
+  """
+  @spec offline_worker_url() :: String.t()
+  def offline_worker_url, do: Routes.path("/admin/boards/assets/offline-sw.js", locale: :none)
 
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
@@ -855,8 +876,11 @@ defmodule PhoenixKitBoards.Web.BoardLive do
            |> tell_sender_about_restored(restored, merged)
            |> tell_sender_about_peers(catch_up, merged)}
 
+        # Said in the reply, not only in the flash: a client keeping its edits
+        # for offline use (Etcher's `offline`) takes any other reply as "stored"
+        # and would drop the copy it should send again.
         {:error, _reason} ->
-          {:noreply, put_flash(socket, :error, "Could not save the board.")}
+          {:reply, %{saved: false}, put_flash(socket, :error, "Could not save the board.")}
       end
     end
   end
@@ -1460,13 +1484,41 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   # see `mount/3`.
   @impl true
   def render(%{board: nil} = assigns) do
+    assigns = assign(assigns, :offline?, offline?())
+
     ~H"""
-    <div class={[
-      "flex items-center justify-center",
-      if(@embedded?, do: "h-dvh", else: "h-[calc(100vh-8rem)] min-h-[520px]")
-    ]}>
+    <%!-- `data-offline-slot`: where Etcher rebuilds the board when this page
+          is opened with no connection (only this render reaches the browser
+          then). --%>
+    <div
+      data-offline-slot={@offline? && "board"}
+      class={[
+        "flex items-center justify-center",
+        if(@embedded?, do: "h-dvh", else: "h-[calc(100vh-8rem)] min-h-[520px]")
+      ]}
+    >
       <p :if={@gone?} role="alert" class="text-sm text-base-content/60">Board not found.</p>
       <span :if={not @gone?} class="loading loading-spinner loading-lg text-base-content/40"></span>
+      <%!-- Opened from the offline copy (the service worker marks it), there
+            is no LiveView to mount the canvas hooks, and the host loads Fresco
+            and Etcher only when one mounts — so Etcher, whose offline start
+            rebuilds the board here, would never arrive. Load them now. A plain
+            script: offline is always a full page load, never a patch. --%>
+      <script :if={@offline?} nonce={assigns[:script_csp_nonce]}>
+        (function () {
+          var copy = document.querySelector('meta[name="etcher-offline-copy"]');
+          if (!copy && navigator.onLine !== false) return;
+          var L = window.PhoenixKitLibraries;
+          if (!L || typeof L.loadVendored !== "function") return;
+          L.loadVendored("Fresco", "fresco", {
+            check: function () { return !!(window.FrescoHooks && window.FrescoHooks.FrescoCanvas); }
+          }).then(function () {
+            return L.loadVendored("Etcher", "etcher", {
+              check: function () { return !!(window.EtcherHooks && window.EtcherHooks.EtcherLayer); }
+            });
+          }).catch(function () {});
+        })();
+      </script>
     </div>
     """
   end
@@ -1491,13 +1543,19 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           failed must still say so inside the widget's overlay. Outside the
           column, so its empty wrapper takes no gap. --%>
     <.flash_group :if={@embedded?} flash={@flash} id="board-flash" />
-    <div class={[
-      "flex flex-col gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
-      if(@embedded?,
-        do: "h-dvh px-3 pt-2 pb-3",
-        else: "h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4"
-      )
-    ]}>
+    <%!-- `data-offline-root`: the part of the page Etcher rebuilds when the
+          board is opened with no connection — the header too, so the way back
+          and the board's frame look as they do online. --%>
+    <div
+      data-offline-root={offline?() && "board"}
+      class={[
+        "flex flex-col gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
+        if(@embedded?,
+          do: "h-dvh px-3 pt-2 pb-3",
+          else: "h-[calc(100vh-8rem)] min-h-[520px] px-4 py-4"
+        )
+      ]}
+    >
       <header class="flex items-center gap-3 shrink-0">
         <%!-- A plain link for the user route: it goes back to a host page in
               another live_session, which `navigate` would refuse. --%>
@@ -1518,7 +1576,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           <.icon name="hero-arrow-left" class="w-5 h-5" />
         </.link>
 
-        <div class="ml-auto flex items-center gap-2">
+        <%!-- Who is here is live news; an offline copy of it would be wrong. --%>
+        <div class="ml-auto flex items-center gap-2" data-offline-hide>
           <div class="flex -space-x-2">
             <span
               class="inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-medium text-white ring-2 ring-base-100"
@@ -1581,7 +1640,14 @@ defmodule PhoenixKitBoards.Web.BoardLive do
               in place of the pencil) and its tool bar in one dark look — the
               same as phoenix_kit's media viewer. No eye: on a board the shapes
               are the board, there is nothing under them to look at. --%>
-        <Etcher.layer fresco_id="board-canvas" toolbar tools={@tools} nav_buttons={[:modes]} />
+        <Etcher.layer
+          fresco_id="board-canvas"
+          toolbar
+          tools={@tools}
+          nav_buttons={[:modes]}
+          offline={offline?() && "board:" <> @board.uuid}
+          offline_sw={offline?() && offline_worker_url()}
+        />
         <div
           id="board-cursors"
           phx-hook="BoardCursors"

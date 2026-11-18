@@ -21,6 +21,13 @@ defmodule PhoenixKitBoards.Routes do
         as: :phoenix_kit_boards_hooks_localized
       )
 
+      get(
+        "/admin/boards/assets/offline-sw.js",
+        PhoenixKitBoards.Web.AssetController,
+        :offline_worker,
+        as: :phoenix_kit_boards_offline_worker_localized
+      )
+
       live("/admin/boards/:id", PhoenixKitBoards.Web.BoardLive, :show,
         as: :phoenix_kit_board_localized
       )
@@ -35,6 +42,13 @@ defmodule PhoenixKitBoards.Routes do
       # Before `/admin/boards/:id`, which would otherwise claim it.
       get("/admin/boards/assets/hooks.js", PhoenixKitBoards.Web.AssetController, :js,
         as: :phoenix_kit_boards_hooks
+      )
+
+      get(
+        "/admin/boards/assets/offline-sw.js",
+        PhoenixKitBoards.Web.AssetController,
+        :offline_worker,
+        as: :phoenix_kit_boards_offline_worker
       )
 
       live("/admin/boards/:id", PhoenixKitBoards.Web.BoardLive, :show, as: :phoenix_kit_board)

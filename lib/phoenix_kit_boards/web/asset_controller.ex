@@ -29,6 +29,7 @@ defmodule PhoenixKitBoards.Web.AssetController do
 
   @impl Plug
   def call(conn, :js), do: js(conn, conn.params)
+  def call(conn, :offline_worker), do: offline_worker(conn)
 
   @bundle_path Path.join(
                  :code.priv_dir(:phoenix_kit_boards),
@@ -81,6 +82,24 @@ defmodule PhoenixKitBoards.Web.AssetController do
     else
       send_resp(conn, 304, "")
     end
+  end
+
+  @doc """
+  Etcher's offline service worker (`Etcher.offline_worker/0`), for boards
+  with `config :phoenix_kit, offline_annotations: true`.
+
+  `no-cache`: the browser checks a worker for a new version on every
+  navigation, and a cached copy would pin an old one. `service-worker-allowed`
+  lets it be registered for the whole site rather than only this directory;
+  it still answers only for the pages and files a board asked it to keep.
+  """
+  def offline_worker(conn) do
+    conn
+    |> put_private(:plug_skip_csrf_protection, true)
+    |> put_resp_header("content-type", "text/javascript; charset=utf-8")
+    |> put_resp_header("cache-control", "no-cache")
+    |> put_resp_header("service-worker-allowed", "/")
+    |> send_resp(200, Etcher.offline_worker())
   end
 
   defp stale?(conn) do
