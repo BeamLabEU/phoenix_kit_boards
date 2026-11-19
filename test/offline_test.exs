@@ -51,13 +51,22 @@ defmodule PhoenixKitBoards.OfflineTest do
       assert get_resp_header(conn, "service-worker-allowed") == ["/"]
     end
 
-    test "its URL sits beside the hook bundle" do
-      assert BoardLive.offline_worker_url() =~ ~r{/admin/boards/assets/offline-sw\.js$}
+    test "its URL is core's when core serves one, this module's otherwise" do
+      url = BoardLive.offline_worker_url()
+
+      if Code.ensure_loaded?(PhoenixKit.Offline) and
+           function_exported?(PhoenixKit.Offline, :worker_url, 0) do
+        assert url == PhoenixKit.Offline.worker_url()
+      else
+        assert url =~ ~r{/admin/boards/assets/offline-sw\.js$}
+      end
     end
   end
 
   defp render_spinner do
-    rendered_to_string(BoardLive.render(%{__changed__: nil, board: nil, gone?: false, embedded?: false}))
+    rendered_to_string(
+      BoardLive.render(%{__changed__: nil, board: nil, gone?: false, embedded?: false})
+    )
   end
 
   describe "the disconnected render (all the browser has offline)" do

@@ -121,13 +121,23 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   def offline?, do: Application.get_env(:phoenix_kit, :offline_annotations, false) == true
 
   @doc """
-  URL of Etcher's offline service worker, as this module serves it.
+  URL of Etcher's offline service worker.
 
-  The same on every page, whatever the language: a site has one worker, and
-  registering it under a second URL replaces the first registration.
+  Core's (`PhoenixKit.Offline.worker_url/0`, which the media viewer uses too)
+  when the core in use has one, and this module's own otherwise. A site has
+  one worker: registering it under a second URL replaces the first
+  registration, so a board and the media viewer must name the same one. Either
+  is the same on every page, whatever the language.
   """
   @spec offline_worker_url() :: String.t()
-  def offline_worker_url, do: Routes.path("/admin/boards/assets/offline-sw.js", locale: :none)
+  def offline_worker_url do
+    if Code.ensure_loaded?(PhoenixKit.Offline) and
+         function_exported?(PhoenixKit.Offline, :worker_url, 0) do
+      PhoenixKit.Offline.worker_url()
+    else
+      Routes.path("/admin/boards/assets/offline-sw.js", locale: :none)
+    end
+  end
 
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
