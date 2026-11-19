@@ -311,6 +311,31 @@ Core's `:phoenix_kit_js_sources` compiler concatenates it into the host's
 `phoenix_kit_modules.js` (loaded before `app.js`) and folds the global into
 `window.PhoenixKitHooks`. The host does nothing.
 
+### Offline boards
+
+Opt-in, `config :phoenix_kit, offline_annotations: true` — **core's** switch
+(`PhoenixKit.Offline.enabled?/0`), and core serves the service worker
+(`PhoenixKit.Offline.worker_url/0`). Do not serve a second one from this
+module: a site has one worker, and the media viewer and a board registering
+different URLs would keep replacing each other. The machinery is Etcher's
+(`offline` / `offline_sw` on `Etcher.layer`); this module only wires it:
+
+- the layer gets `offline="board:<uuid>"`; the page's outer element is
+  `data-offline-root`, the presence roster `data-offline-hide`;
+- the disconnected render (`board: nil`) is `data-offline-slot` and, opened
+  from the offline copy, loads Fresco and Etcher through
+  `PhoenixKitLibraries.loadVendored` — no hook mounts offline, and hosts load
+  them only when one does;
+- **a save that was not stored must reply `%{saved: false}`.** Etcher reads any
+  other reply as stored and drops the device's copy. Pinned by
+  `test/integration/offline_save_reply_test.exs`.
+
+Offline edits come back through Etcher's own three-way merge on the next online
+load and are saved through the ordinary `etcher:annotations-changed`, so they
+take the same path (and the same `peer_arrivals` / revision rules) as any edit.
+This is separate from BoardSync's reconnect resync, which covers a socket that
+drops while the page stays open.
+
 ### Versioned migrations
 
 `PhoenixKitBoards.Migrations` is the coordinator `mix phoenix_kit.update`

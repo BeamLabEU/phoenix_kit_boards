@@ -26,7 +26,6 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.PubSubHelper
   alias PhoenixKit.Users.Auth
   alias PhoenixKit.Users.Auth.User
-  alias PhoenixKit.Utils.Routes
   alias PhoenixKitBoards.{Access, Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
   alias PhoenixKitBoards.Web.RuntimeHooks
@@ -109,35 +108,12 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   @spec laser_measure?() :: boolean()
   def laser_measure?, do: Application.get_env(:phoenix_kit, :laser_measure, false) == true
 
-  @doc """
-  Whether boards work offline (`config :phoenix_kit, offline_annotations:
-  true`). Off by default; only a literal `true` turns it on.
-
-  On, the board's edits are also kept in the browser and sent when the
-  connection is back, and a service worker keeps the page so it opens with no
-  connection (Etcher's `offline` mode).
-  """
-  @spec offline?() :: boolean()
-  def offline?, do: Application.get_env(:phoenix_kit, :offline_annotations, false) == true
-
-  @doc """
-  URL of Etcher's offline service worker.
-
-  Core's (`PhoenixKit.Offline.worker_url/0`, which the media viewer uses too)
-  when the core in use has one, and this module's own otherwise. A site has
-  one worker: registering it under a second URL replaces the first
-  registration, so a board and the media viewer must name the same one. Either
-  is the same on every page, whatever the language.
-  """
-  @spec offline_worker_url() :: String.t()
-  def offline_worker_url do
-    if Code.ensure_loaded?(PhoenixKit.Offline) and
-         function_exported?(PhoenixKit.Offline, :worker_url, 0) do
-      PhoenixKit.Offline.worker_url()
-    else
-      Routes.path("/admin/boards/assets/offline-sw.js", locale: :none)
-    end
-  end
+  # Offline boards (`config :phoenix_kit, offline_annotations: true`) are
+  # core's switch and core's service worker (`PhoenixKit.Offline`), shared with
+  # the media viewer: a site has one worker, and registering it under a second
+  # URL replaces the first registration. Called directly — the fresco 0.17 /
+  # etcher 0.28 floors in `mix.exs` resolve only next to a core that has it.
+  defp offline?, do: PhoenixKit.Offline.enabled?()
 
   @cursor_colors ~w(#2563eb #db2777 #16a34a #d97706 #7c3aed #0891b2 #dc2626 #4f46e5)
 
@@ -1656,7 +1632,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           tools={@tools}
           nav_buttons={[:modes]}
           offline={offline?() && "board:" <> @board.uuid}
-          offline_sw={offline?() && offline_worker_url()}
+          offline_sw={offline?() && PhoenixKit.Offline.worker_url()}
         />
         <div
           id="board-cursors"

@@ -136,8 +136,11 @@ defmodule PhoenixKitBoards.MixProject do
       # `saved: false` contract, and the page is rebuilt with no connection
       # from the copy of the canvas element fresco 0.17 keeps. Etcher 0.26
       # (the laser measure, `:measure` in `tools/0`) and 0.27 (the placing
-      # loupe) come with it. On older ones the host's compile warns about the
-      # attributes, and a board opened offline stays a spinner.
+      # loupe) come with it. These floors also resolve only next to a core
+      # that admits fresco 0.17 — the first one with `PhoenixKit.Offline`,
+      # whose switch and worker the board uses directly (3.6.1 pins
+      # `fresco ~> 0.16.0`). Raise the core floor to that release once it is
+      # out.
       pk_dep(:fresco, ">= 0.17.0 and < 1.0.0"),
       pk_dep(:etcher, "~> 0.28"),
 

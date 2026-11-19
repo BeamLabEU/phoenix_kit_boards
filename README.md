@@ -112,14 +112,16 @@ laser_measure: true`. Only while it is on does the overlay's frame get the
 `bluetooth` permission.
 
 **Offline boards** are opt-in too: `config :phoenix_kit, offline_annotations:
-true`. A board opened online once is kept on the device (a service worker,
-Etcher's `etcher-offline-sw.js`, which this module serves at
-`/admin/boards/assets/offline-sw.js` for the whole site), so it opens, draws
-and measures with no connection, and its edits are kept in the browser. When
+true` — PhoenixKit's own switch, shared with its media viewer. A board opened
+online once is kept on the device (a service worker, Etcher's
+`etcher-offline-sw.js`, which PhoenixKit serves for the whole site), so it
+opens, draws and measures with no connection, and its edits are kept in the
+browser. When
 the connection is back the page reloads and sends them, merged shape by shape
 with whatever changed on the server meanwhile. The worker only answers for the
 pages and files a board asked it to keep. It needs a secure page (https, or
-localhost).
+localhost). The copy stays in that browser after the person signs out, so turn
+it on only where devices are not shared.
 
 ### Permissions
 
