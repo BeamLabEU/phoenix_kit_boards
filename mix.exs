@@ -129,8 +129,17 @@ defmodule PhoenixKitBoards.MixProject do
       # `nav_buttons: [:modes]`, the View | Annotate switch. On older ones the
       # host's compile warns about the attributes and the export comes out
       # without the drawing.
-      pk_dep(:fresco, ">= 0.16.0 and < 1.0.0"),
-      pk_dep(:etcher, "~> 0.25"),
+      #
+      # fresco 0.17 and etcher 0.28 are the floors for offline boards
+      # (`config :phoenix_kit, offline_annotations: true`): the board passes
+      # etcher's `offline` and `offline_sw`, its saves answer etcher's
+      # `saved: false` contract, and the page is rebuilt with no connection
+      # from the copy of the canvas element fresco 0.17 keeps. Etcher 0.26
+      # (the laser measure, `:measure` in `tools/0`) and 0.27 (the placing
+      # loupe) come with it. On older ones the host's compile warns about the
+      # attributes, and a board opened offline stays a spinner.
+      pk_dep(:fresco, ">= 0.17.0 and < 1.0.0"),
+      pk_dep(:etcher, "~> 0.28"),
 
       # Link previews: fetch the page (req), read its OpenGraph tags (floki),
       # draw the card (open_fresco). Cards are emitted as SVG and rasterized

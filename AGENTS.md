@@ -45,8 +45,8 @@ or router of its own.
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
 - `gettext` (`~> 1.0`) — `PhoenixKitBoards.Gettext`, the backend that translates the
   permission labels in the admin matrix
-- `fresco` (`>= 0.16.0 and < 1.0.0`) — the infinite-canvas engine and `Fresco.Canvas` document
-- `etcher` (`~> 0.25`) — the annotation/drawing layer over the canvas
+- `fresco` (`>= 0.17.0 and < 1.0.0`) — the infinite-canvas engine and `Fresco.Canvas` document
+- `etcher` (`~> 0.28`) — the annotation/drawing layer over the canvas
 - `req` (`~> 0.5`) — fetches the page behind a pasted link
 - `floki` (`>= 0.34.0`) — reads its OpenGraph tags
 - `open_fresco` (`~> 0.2`) — lays the preview card out and emits it as SVG
