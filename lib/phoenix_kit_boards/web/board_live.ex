@@ -1525,7 +1525,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
               style={"background:#{@me.color}"}
               title={"#{@me.name} (you)"}
             >
-              {initials(@me.name)}
+              {presence_initials(@me.name)}
             </span>
             <span
               :for={{_id, peer} <- @peers}
@@ -1533,7 +1533,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
               style={"background:#{peer.color}"}
               title={peer.name}
             >
-              {initials(peer.name)}
+              {presence_initials(peer.name)}
             </span>
           </div>
           <span class="text-xs text-base-content/50">
@@ -1609,7 +1609,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     """
   end
 
-  defp initials(name) do
+  defp presence_initials(name) do
     name
     |> to_string()
     |> String.trim()
