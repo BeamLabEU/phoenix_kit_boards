@@ -4,6 +4,39 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## 0.9.0 - 2026-11-23
+
+Needs **phoenix_kit 3.7.0** or later, the first core with `PhoenixKit.Offline`
+and the first that admits fresco 0.17.
+
+### Added
+
+- **Offline boards**, opt-in with `config :phoenix_kit, offline_annotations: true`
+  (PhoenixKit's own switch, shared with the media viewer; the service worker is
+  core's `etcher-offline-sw.js`, one per site). A board opened online once is kept
+  on the device and opens, draws and measures with no connection; when the
+  connection is back the page reloads and sends the edits, merged shape by shape
+  with whatever changed on the server meanwhile. A save the server could not
+  store now answers `%{saved: false}`, so the device keeps its copy and sends it
+  again. Needs a secure page (https, or localhost); the copy stays in that
+  browser after sign-out, so turn it on only where devices are not shared.
+
+### Changed (breaking)
+
+- **The `phoenix_kit` floor is now 3.7.0** (fresco `>= 0.17.0`, `etcher ~> 0.28`).
+  The board page calls `PhoenixKit.Offline` — the offline switch and the service
+  worker — directly, and no older core has it.
+
+### Fixed
+
+- **A malformed `etcher:annotations-changed` event is no longer acknowledged as
+  stored.** It answers `%{saved: false}` like a failed write; Etcher reads any
+  other reply as stored and would have dropped the device's only copy.
+- **The board page's own `initials/1` helper is renamed to `presence_initials/1`**,
+  so it cannot clash with the `initials/1` core's `UserInfo` exports (imported by
+  every `use PhoenixKitWeb, :live_view` module) — a host taking the core release
+  that adds it would not have compiled with the old name.
+
 ## 0.8.0 - 2026-11-15
 
 Needs **phoenix_kit 3.6.0** or later, the first core that admits fresco 0.16
