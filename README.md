@@ -260,7 +260,8 @@ end
 
 ## Requirements
 
-- `phoenix_kit >= 3.6.0 and < 4.0.0`, `fresco >= 0.16.0 and < 1.0.0`, `etcher ~> 0.25` (all resolved by the
+- `phoenix_kit >= 3.7.0 and < 4.0.0` (the first core with `PhoenixKit.Offline`, which the offline
+  boards wire in), `fresco >= 0.17.0 and < 1.0.0`, `etcher ~> 0.28` (all resolved by the
   host — this module references their components and reuses their loaded JS).
 - **PhoenixKit's Storage module, with at least one bucket enabled**, if you
   want pasted images to be uploaded rather than embedded. Without it every

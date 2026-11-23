@@ -871,7 +871,10 @@ defmodule PhoenixKitBoards.Web.BoardLive do
     end
   end
 
-  def handle_event("etcher:annotations-changed", _params, socket), do: {:noreply, socket}
+  # Not a list: nothing was stored, and per the offline contract any reply
+  # but `saved: false` tells the client the list is stored.
+  def handle_event("etcher:annotations-changed", _params, socket),
+    do: {:reply, %{saved: false}, socket}
 
   # The upload form's `phx-change`. Nothing to do here — `auto_upload: true`
   # starts the transfer and `handle_image_progress/3` does the work — but the
@@ -1510,6 +1513,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   end
 
   def render(assigns) do
+    assigns = assign(assigns, :offline?, offline?())
+
     ~H"""
     <%!--
       A finger on this page is drawing, panning or pressing a control — never
@@ -1533,7 +1538,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           board is opened with no connection — the header too, so the way back
           and the board's frame look as they do online. --%>
     <div
-      data-offline-root={offline?() && "board"}
+      data-offline-root={@offline? && "board"}
       class={[
         "flex flex-col gap-3 pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
         if(@embedded?,
@@ -1631,8 +1636,8 @@ defmodule PhoenixKitBoards.Web.BoardLive do
           toolbar
           tools={@tools}
           nav_buttons={[:modes]}
-          offline={offline?() && "board:" <> @board.uuid}
-          offline_sw={offline?() && PhoenixKit.Offline.worker_url()}
+          offline={@offline? && "board:" <> @board.uuid}
+          offline_sw={@offline? && PhoenixKit.Offline.worker_url()}
         />
         <div
           id="board-cursors"

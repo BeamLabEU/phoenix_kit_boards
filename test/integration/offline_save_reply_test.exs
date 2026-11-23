@@ -61,6 +61,20 @@ defmodule PhoenixKitBoards.Integration.OfflineSaveReplyTest do
     assert Phoenix.Flash.get(socket.assigns.flash, :error) == "Could not save the board."
   end
 
+  test "a malformed save is not acknowledged as stored either" do
+    {:ok, board} = Boards.create_board(%{"name" => "Malformed"})
+
+    assert {:reply, %{saved: false}, _socket} =
+             BoardLive.handle_event(
+               "etcher:annotations-changed",
+               %{"annotations" => "not a list"},
+               socket_for(board)
+             )
+
+    assert {:reply, %{saved: false}, _socket} =
+             BoardLive.handle_event("etcher:annotations-changed", %{}, socket_for(board))
+  end
+
   describe "the board page" do
     setup do
       previous = Application.fetch_env(:phoenix_kit, :offline_annotations)
@@ -95,6 +109,9 @@ defmodule PhoenixKitBoards.Integration.OfflineSaveReplyTest do
       assert html =~ ~s(data-offline-key="board:#{ctx.board.uuid}")
       assert html =~ ~s(data-offline-sw="#{PhoenixKit.Offline.worker_url()}")
       assert html =~ ~s(data-offline-root="board")
+      # The presence roster is live news: an offline copy of it would be
+      # wrong, so Etcher strips it from the shell it saves.
+      assert html =~ "data-offline-hide"
     end
 
     test "with offline off, the page carries none of it", ctx do

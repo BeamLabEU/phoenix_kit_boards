@@ -41,7 +41,7 @@ mix quality.ci              # format --check-formatted + credo --strict + dialyz
 This is a **library** (not a standalone Phoenix app) — no `config/`, endpoint,
 or router of its own.
 
-- `phoenix_kit` (`>= 3.6.0 and < 4.0.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, and `Modules.Storage` for image uploads
+- `phoenix_kit` (`>= 3.7.0 and < 4.0.0`) — Module behaviour, Settings, RepoHelper, Dashboard tabs, `Utils.Routes`, `SchemaPrefix`, `Modules.Storage` for image uploads, and `PhoenixKit.Offline` (the offline switch and service worker boards wire in, called unguarded)
 - `phoenix_live_view` (`~> 1.1`) — the two admin LiveViews
 - `gettext` (`~> 1.0`) — `PhoenixKitBoards.Gettext`, the backend that translates the
   permission labels in the admin matrix

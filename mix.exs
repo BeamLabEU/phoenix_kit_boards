@@ -61,16 +61,17 @@ defmodule PhoenixKitBoards.MixProject do
 
   defp deps do
     [
-      # Floor 3.6.0. 3.5.0 is the ecosystem-wide minimum core, but it pins
-      # `fresco ~> 0.15.0` / `etcher ~> 0.24.0`, which cannot sit next to the
-      # fresco 0.16 / etcher 0.25 this module needs below. A floor that admits
-      # it promises a combination no host can resolve. 3.6.0 is the first core
-      # that allows them, and it serves etcher 0.26's JS, which the laser
-      # measure needs. The ceiling is open through core 3.x. The core APIs
-      # this module calls (`SchemaPrefix`, `Storage.ResourceFolders`,
-      # `Scope.can?/2`, ...) are unguarded, so a core without one is a compile
-      # or runtime error in the host.
-      pk_dep(:phoenix_kit, ">= 3.6.0 and < 4.0.0"),
+      # Floor 3.7.0. The older cores are out twice over: they pin at most
+      # `fresco ~> 0.16.0`, which cannot sit next to the fresco 0.17 /
+      # etcher 0.28 this module needs below, and they have no
+      # `PhoenixKit.Offline`, whose switch and worker the offline board
+      # wiring calls unguarded. 3.7.0 is the first core that admits fresco
+      # 0.17 and carries `PhoenixKit.Offline` (it also serves etcher 0.26's
+      # JS, which the laser measure needs). The ceiling is open through core
+      # 3.x. The core APIs this module calls (`SchemaPrefix`,
+      # `Storage.ResourceFolders`, `Scope.can?/2`, ...) are unguarded, so a
+      # core without one is a compile or runtime error in the host.
+      pk_dep(:phoenix_kit, ">= 3.7.0 and < 4.0.0"),
       {:phoenix_live_view, "~> 1.1"},
       # The label and description of `boards.manage` in the admin permissions
       # matrix are translated through this module's own backend.
@@ -137,10 +138,9 @@ defmodule PhoenixKitBoards.MixProject do
       # from the copy of the canvas element fresco 0.17 keeps. Etcher 0.26
       # (the laser measure, `:measure` in `tools/0`) and 0.27 (the placing
       # loupe) come with it. These floors also resolve only next to a core
-      # that admits fresco 0.17 — the first one with `PhoenixKit.Offline`,
-      # whose switch and worker the board uses directly (3.6.1 pins
-      # `fresco ~> 0.16.0`). Raise the core floor to that release once it is
-      # out.
+      # that admits fresco 0.17 — 3.7.0, the first one with
+      # `PhoenixKit.Offline`, whose switch and worker the board uses
+      # directly. Hence the core floor above.
       pk_dep(:fresco, ">= 0.17.0 and < 1.0.0"),
       pk_dep(:etcher, "~> 0.28"),
 
