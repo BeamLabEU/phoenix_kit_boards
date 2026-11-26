@@ -61,8 +61,11 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     * `actions` — which ways to start a board to offer, from `[:empty, :text,
       :image]` (default all three)
     * `paste` — `false` to switch off paste-to-make-a-board (default `true`)
-    * `script_nonce` — CSP nonce for the one `<script>` the paste behaviour
-      needs, for a host that enforces a Content-Security-Policy
+    * `script_nonce` — CSP nonce for the inline `<script>`s of the panel (paste,
+      the viewer, the export), for a host that enforces a
+      Content-Security-Policy. Not needed when core knows the page's nonce
+      (`config :phoenix_kit, csp_nonce_assign_key:`, a core with
+      `PhoenixKitWeb.CSP`): the panel then uses that one
     * `limit` — tiles shown before "Show all" (default 11, so a row of four fills
       neatly with the new-board tile)
     * `open` — what opening a board does: `:overlay` (default) opens it over
@@ -105,6 +108,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
   alias PhoenixKit.Users.Auth.Scope
   alias PhoenixKitBoards.{Access, Boards, Paths, Quick}
   alias PhoenixKitBoards.Web.BoardLive
+  alias PhoenixKitBoards.Web.CSP
 
   @default_limit 11
   @show_all_limit 500
@@ -221,7 +225,7 @@ defmodule PhoenixKitBoards.Web.BoardsPanel do
     |> assign(:poll, Map.get(assigns, :poll, @default_poll))
     |> assign(:class, assigns[:class])
     |> assign(:paste?, Map.get(assigns, :paste, true) != false)
-    |> assign(:script_nonce, assigns[:script_nonce])
+    |> assign(:script_nonce, CSP.script_nonce(assigns[:script_nonce]))
     |> assign(:visibility_options, visibility_options(assigns[:visibility_options]))
     |> assign(:default_visibility, default_visibility(assigns))
     |> reset_context(previous != {user_uuid, scope, scope_ok?})

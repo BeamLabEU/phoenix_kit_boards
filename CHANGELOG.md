@@ -4,6 +4,23 @@ All notable changes to **PhoenixKitBoards** are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **The inline scripts take the page's Content-Security-Policy nonce from core
+  when the host passes none.** The panel's three runtime hooks (paste, viewer,
+  export), the board page's hook scripts and its offline loader already had a
+  `nonce` attribute, but only with a value the host handed in (`script_nonce`,
+  `:script_csp_nonce`), so a host with `script-src 'self' 'nonce-…'` that
+  rendered the panel without it got the scripts blocked. They now fall back to
+  the nonce core knows (`PhoenixKitBoards.Web.CSP`, feature-detected: a core
+  with `PhoenixKitWeb.CSP` and the host's `csp_nonce_assign_key`); a value the
+  host passes still wins, and on an older core nothing changes. The module
+  renders no inline event handlers and no inline `<style>`;
+  `test/csp_inline_tags_test.exs` fails on a new one or on an inline tag
+  without the nonce. Inline `style="…"` attributes are not covered. (#17)
+
 ## 0.9.0 - 2026-11-23
 
 Needs **phoenix_kit 3.7.0** or later, the first core with `PhoenixKit.Offline`

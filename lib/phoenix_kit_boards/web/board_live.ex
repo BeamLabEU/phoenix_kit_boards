@@ -28,6 +28,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
   alias PhoenixKit.Users.Auth.User
   alias PhoenixKitBoards.{Access, Boards, LinkPreview, Paths, Uploads}
   alias PhoenixKitBoards.Web.BoardSocket
+  alias PhoenixKitBoards.Web.CSP
   alias PhoenixKitBoards.Web.RuntimeHooks
 
   # Pasted / dropped images go to storage; the shape keeps a URL.
@@ -1493,7 +1494,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
             and Etcher only when one mounts — so Etcher, whose offline start
             rebuilds the board here, would never arrive. Load them now. A plain
             script: offline is always a full page load, never a patch. --%>
-      <script :if={@offline?} nonce={assigns[:script_csp_nonce]}>
+      <script :if={@offline?} nonce={CSP.script_nonce(assigns[:script_csp_nonce])}>
         (function () {
           var copy = document.querySelector('meta[name="etcher-offline-copy"]');
           if (!copy && navigator.onLine !== false) return;
@@ -1596,7 +1597,7 @@ defmodule PhoenixKitBoards.Web.BoardLive do
             Before the elements that use them: LiveView re-creates a runtime-hook
             script as the patch adds it, and a hook is resolved when its element
             mounts, which is after. --%>
-      <RuntimeHooks.scripts nonce={assigns[:script_csp_nonce]} />
+      <RuntimeHooks.scripts nonce={CSP.script_nonce(assigns[:script_csp_nonce])} />
 
       <%!-- phx-update="ignore": the canvas is hook-managed; LiveView must not
             re-render it. Collaboration flows through pushed events. --%>

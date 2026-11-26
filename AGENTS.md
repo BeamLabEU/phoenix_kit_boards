@@ -388,6 +388,32 @@ add the `apply_step/3` clauses, and teach `infer_version/2` the new shape.
   clause therefore omits `#board-root` entirely, letting the connected render
   insert it fresh.
 
+## Content-Security-Policy
+
+The module works under a host policy like `script-src 'self' 'nonce-…'`
+(core's `guides/content-security-policy.md`). Rules:
+
+- **Every inline `<script>` / `<style>` carries a nonce resolved by
+  `PhoenixKitBoards.Web.CSP.script_nonce/1`**: the value the host passed
+  (`script_nonce` of `boards_panel`, `:script_csp_nonce` on the board page,
+  `nonce` of `RuntimeHooks.scripts/1`), else the nonce core knows for the page.
+  The helper feature-detects core's `PhoenixKitWeb.CSP` (absent from the older
+  cores the pin still allows) and answers `nil` there, which renders no
+  attribute. Never render `nonce=""`: it matches nothing.
+- **No inline event handlers** (`onclick=`, `onerror=` …), in markup or in HTML
+  the JS builds: no nonce covers an attribute. Use a `phx-` binding,
+  `Phoenix.LiveView.JS` or a hook. A `<style>` / `<script>` created from JS
+  takes the nonce first (the shim of `RuntimeHooks` sets `el.nonce`; for a
+  style, `window.PhoenixKitInternals.adoptStyle(el)` when it exists).
+- The panel is a LiveComponent in the **host's** LiveView: after the socket
+  connects, core knows the nonce there only when the host's live session
+  carries it (`session: {PhoenixKitWeb.CSP, :live_session, []}` +
+  `on_mount PhoenixKitWeb.CSP`, core's guide); otherwise the host keeps passing
+  `script_nonce`.
+- `test/csp_inline_tags_test.exs` enforces the tag and handler rules over
+  `lib/` and `priv/static/assets/*.js`. Inline `style="…"` attributes (the
+  cursors' markup among them) are not covered.
+
 ## Testing
 
 Two levels. **Unit** tests need no database. **Integration** tests

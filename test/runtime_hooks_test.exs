@@ -10,6 +10,9 @@ defmodule PhoenixKitBoards.RuntimeHooksTest do
   """
   use ExUnit.Case, async: true
 
+  # Absent from the cores below the first release with CSP nonces.
+  @compile {:no_warn_undefined, PhoenixKitWeb.CSP}
+
   alias PhoenixKitBoards.Web.AssetController
   alias PhoenixKitBoards.Web.RuntimeHooks
 
@@ -18,6 +21,25 @@ defmodule PhoenixKitBoards.RuntimeHooksTest do
     |> Map.put(:__changed__, nil)
     |> RuntimeHooks.scripts()
     |> Phoenix.LiveViewTest.rendered_to_string()
+  end
+
+  # Core keeps the page's nonces in the process: put them there the way a
+  # LiveView's `on_mount` does, from a session — in a process of its own, so
+  # nothing is left behind in this one.
+  defp with_core_nonce(nonce, fun) do
+    fn ->
+      {:cont, _} =
+        PhoenixKitWeb.CSP.on_mount(
+          :default,
+          %{},
+          %{"phoenix_kit_csp_nonces" => %{"script" => nonce}},
+          %Phoenix.LiveView.Socket{}
+        )
+
+      fun.()
+    end
+    |> Task.async()
+    |> Task.await()
   end
 
   describe "the emitted scripts" do
@@ -110,6 +132,32 @@ defmodule PhoenixKitBoards.RuntimeHooksTest do
 
     test "is carried through when it is" do
       assert render(%{nonce: "r4nd0m"}) =~ ~s(nonce="r4nd0m")
+    end
+
+    # A host that tells core its nonce (`csp_nonce_assign_key`) passes nothing
+    # here: the scripts take the page's nonce from core. Only a core with
+    # `PhoenixKitWeb.CSP` can tell; on an older one there is still no attribute.
+    test "falls back to the nonce core knows for the page" do
+      if Code.ensure_loaded?(PhoenixKitWeb.CSP) do
+        with_core_nonce("c0re", fn ->
+          html = render(%{nonce: nil})
+
+          for tag <- Regex.scan(~r/<script[^>]*>/, html), do: assert(hd(tag) =~ ~s(nonce="c0re"))
+          # The bundle the shim loads inherits it too.
+          assert html =~ ~s(var NONCE = "c0re";)
+
+          # What the host passes still wins.
+          assert render(%{nonce: "h0st"}) =~ ~s(nonce="h0st")
+          refute render(%{nonce: "h0st"}) =~ "c0re"
+        end)
+      else
+        assert PhoenixKitBoards.Web.CSP.nonce(:script) == nil
+      end
+    end
+
+    test "an empty nonce from the host counts as none" do
+      assert PhoenixKitBoards.Web.CSP.script_nonce("") == PhoenixKitBoards.Web.CSP.nonce(:script)
+      assert PhoenixKitBoards.Web.CSP.script_nonce("abc") == "abc"
     end
   end
 end

@@ -31,6 +31,7 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
 
   alias PhoenixKit.Utils.Routes
   alias PhoenixKitBoards.Web.AssetController
+  alias PhoenixKitBoards.Web.CSP
 
   @hooks ~w(BoardSync BoardCursors)
 
@@ -40,9 +41,12 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
   attr(:nonce, :string,
     default: nil,
     doc: """
-    CSP nonce for the emitted scripts. Required only by hosts that enforce a
+    CSP nonce for the emitted scripts. Needed only by hosts that enforce a
     Content-Security-Policy — without one those hosts would block the script
     and lose collaboration with nothing but a console warning to say why.
+    When it is not given, the nonce core knows for the page is used
+    (`PhoenixKitBoards.Web.CSP`; a core with `PhoenixKitWeb.CSP` and the
+    host's `csp_nonce_assign_key`).
     """
   )
 
@@ -51,7 +55,12 @@ defmodule PhoenixKitBoards.Web.RuntimeHooks do
   """
   def scripts(assigns) do
     src = bundle_url()
-    assigns = assign(assigns, :hooks, Enum.map(@hooks, &{&1, body(&1, src, assigns.nonce)}))
+    nonce = CSP.script_nonce(assigns.nonce)
+
+    assigns =
+      assigns
+      |> assign(:nonce, nonce)
+      |> assign(:hooks, Enum.map(@hooks, &{&1, body(&1, src, nonce)}))
 
     # `<%= %>`, not `{}`: HEEx treats the body of a `<script>` as literal text
     # and leaves `{...}` in the output untouched.
